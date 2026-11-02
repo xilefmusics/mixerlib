@@ -1,8 +1,8 @@
 # mixerlib
 
-`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading mixer status and inventory, channel and aggregate meter streams, labels, preamp gain, fader level, mute, solo, pan, DCA controls, mute groups, snapshots, bus-master controls, and bus/effect send levels and states; subscribing to meter samples and control changes; and setting these controls.
+`mixerlib` is a Rust library for working with audio mixers. Its `Mixer` trait exposes typed X AIR/M AIR OSC controls for channel input and processing, bus and Main processing, effects, sends, routing, automix, monitoring, recorder, mixer settings, snapshots, and meters. `BehringerXAir` supports XR12, MR12, XR16, XR18, X18, and MR18 running firmware 1.11 or newer; model-specific controls return `Unsupported` where unavailable.
 
-The `mixinglib` command-line program reads mixer status, snapshots, meter streams, and controls, subscribes to meter and control changes, and changes channel, bus, DCA, mute group, snapshot, and send controls.
+The `mixinglib` command-line program reads and changes X AIR OSC controls, including processing, effects, routing, network and mixer settings, snapshots, sends, strips, and meters. It also subscribes to typed meter and control updates.
 
 Request mixer information:
 
@@ -37,6 +37,8 @@ cargo build
 ```
 
 The `-m` (`--mixer-family`) option currently accepts `xair`. Use `-i` or `--ip` to provide the mixer address.
+
+The implementation uses OSC over UDP on port 10024. USB input/output routing and the stereo recorder controls are OSC parameters. USB audio data streaming and MIDI transport are outside this OSC library.
 
 Read a channel fader, replacing the placeholders with the mixer address and channel:
 
@@ -148,6 +150,94 @@ cargo run -- -m xair -i <MIXER_IP> dca 1 set label "Backing Vocals"
 cargo run -- -m xair -i <MIXER_IP> dca 1 subscribe
 ```
 
+## Processing, routing, monitoring, and recorder controls
+
+Read or change channel input and processing parameters. Discrete values use the catalog enum index shown by the corresponding Rust enum; float controls accept engineering units and are checked against the vendor ranges.
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> ch 1 process get input-source
+cargo run -- -m xair -i <MIXER_IP> ch 1 process get usb-input-source
+cargo run -- -m xair -i <MIXER_IP> ch 1 process set phantom on
+cargo run -- -m xair -i <MIXER_IP> ch 1 process set high-pass-frequency 120
+cargo run -- -m xair -i <MIXER_IP> ch 1 process set gate-threshold -42
+cargo run -- -m xair -i <MIXER_IP> ch 1 process set eq-band-gain -3 --band 2
+cargo run -- -m xair -i <MIXER_IP> ch 1 process set dynamics-ratio 6
+```
+
+Use `process` for controls shared by channels, buses, and Main LR. Bus and Main EQs support both parametric and graphic bands. The `--band` option selects a parametric band from 1 to 4 for channels/returns and 1 to 6 for buses/Main. Graphic EQ bands use the catalog center frequencies.
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> process bus1 get dynamics-threshold
+cargo run -- -m xair -i <MIXER_IP> process main set dynamics-threshold -12
+cargo run -- -m xair -i <MIXER_IP> process bus1 set eq-band-gain 2 --band 3
+cargo run -- -m xair -i <MIXER_IP> process main set graphic-eq-gain -4 --frequency-hz 31.5
+cargo run -- -m xair -i <MIXER_IP> fx 1 engine get type
+cargo run -- -m xair -i <MIXER_IP> fx 1 engine set type 0
+cargo run -- -m xair -i <MIXER_IP> fx 1 engine set parameter 1 0.5
+```
+
+FX parameter values are the normalized OSC float values. Their engineering-unit meaning and ranges depend on the selected algorithm; the vendor parameter catalog defines each algorithm's parameter table.
+
+Read or change output routing. `route main` and `route phones` use the main-output source enum; `route p16-N` and `route usbN` use the routing source and output-position enums. P16 and multichannel USB routing are available on XR18/X18/MR18. USB outputs 1–2 are available on all supported models.
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> route main get source
+cargo run -- -m xair -i <MIXER_IP> route aux1 get source
+cargo run -- -m xair -i <MIXER_IP> route aux1 set position 4
+cargo run -- -m xair -i <MIXER_IP> route p16-1 set source 0
+cargo run -- -m xair -i <MIXER_IP> route usb1 set position 10
+```
+
+Read or change recorder, network, monitor, and mixer settings. The USB stereo recorder controls and play-next setting are available on XR12/MR12/XR16. Changing network mode or network preferences can move the mixer to another network and interrupt the current connection.
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> recorder get state
+cargo run -- -m xair -i <MIXER_IP> recorder get entry-name --entry 1
+cargo run -- -m xair -i <MIXER_IP> recorder set state 4
+cargo run -- -m xair -i <MIXER_IP> network get
+cargo run -- -m xair -i <MIXER_IP> settings get solo-source
+cargo run -- -m xair -i <MIXER_IP> settings set dim on
+cargo run -- -m xair -i <MIXER_IP> settings get rta-decay
+cargo run -- -m xair -i <MIXER_IP> settings get ap-ssid
+cargo run -- -m xair -i <MIXER_IP> settings get network-candidate --entry 1
+cargo run -- -m xair -i <MIXER_IP> settings get channel-link --pair 1
+cargo run -- -m xair -i <MIXER_IP> settings set link-eq on
+cargo run -- -m xair -i <MIXER_IP> strip ch1 set color 3
+cargo run -- -m xair -i <MIXER_IP> strip ch1 set fader 0.85
+cargo run -- -m xair -i <MIXER_IP> strip ch1 group dca 1 set on
+cargo run -- -m xair -i <MIXER_IP> strip fxsend2 get mute
+cargo run -- -m xair -i <MIXER_IP> automix x set enabled on
+cargo run -- -m xair -i <MIXER_IP> automix y get locked
+cargo run -- -m xair -i <MIXER_IP> solo clear
+```
+
+`settings get network-candidate --entry N` reads one of the ten Wi-Fi scan entries after `network scan`. Linked channel and bus controls take the first odd-numbered strip in `--pair`. Strip names and colors are available for channels, returns, FX sends, buses, Main LR, and DCAs. Automix group controls use `x` or `y`; the per-channel automix group and weight are available under `ch N process`.
+
+`ch N process` also reads and changes an XR18-family channel's USB input source. `process aux` and `process fxN` expose return trim and source switching; their `return-usb-source` field is supported on XR18/X18/MR18. The `strip` command provides normalized fader, mute, solo, pan, LR assignment, and DCA/mute-group membership where those controls exist for that strip.
+
+Typed meter commands preserve the vendor's meter order and convert signed samples from 1/256 dB to dBFS. The original `meter ... get|subscribe` commands still print raw `i16` samples.
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> meter 0 <CHANNEL> typed-get
+cargo run -- -m xair -i <MIXER_IP> meter 6 typed-subscribe
+```
+
+The `changes` command streams every parameter update delivered by `/xremote`, with its OSC address and decoded OSC value type:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> changes
+```
+
+Writes send one OSC packet and do not wait for an acknowledgement. GET requests and subscription events accept both direct parameter replies and `/status` replies.
+
+Return-strip trim and source switching use the generic `process` command:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> process aux get return-trim
+cargo run -- -m xair -i <MIXER_IP> process aux get return-usb-source
+cargo run -- -m xair -i <MIXER_IP> process fx1 set return-source-enabled on
+```
+
 Read or activate one of the four mute groups, and assign a channel to DCA or mute groups. Boolean values accept `true`/`false`, `on`/`off`, or `1`/`0`:
 
 ```sh
@@ -180,11 +270,13 @@ cargo run -- -m xair -i <MIXER_IP> ch 3 send bus 1 subscribe
 cargo run -- -m xair -i <MIXER_IP> ch 3 send fx 2 set 0.5
 ```
 
-The stereo Aux input supports bus send levels. Its per-send enabled state and Aux-to-FX sends are not supported by the X AIR implementation because the documented OSC controls do not expose those individual send paths. The CLI accepts the same Aux send form and reports unsupported operations:
+The stereo Aux input supports bus and FX sends, including group enable state, send tap, and the catalog's supported odd-numbered bus send pan controls:
 
 ```sh
 cargo run -- -m xair -i <MIXER_IP> aux send bus 1 get
-cargo run -- -m xair -i <MIXER_IP> aux send bus 1 subscribe
+cargo run -- -m xair -i <MIXER_IP> aux send bus 1 get enabled
+cargo run -- -m xair -i <MIXER_IP> aux send bus 1 set tap 3
+cargo run -- -m xair -i <MIXER_IP> aux send bus 1 set pan 0.5
 cargo run -- -m xair -i <MIXER_IP> aux send fx 2 get
 ```
 

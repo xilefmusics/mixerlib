@@ -3,6 +3,14 @@ mod mixer;
 
 pub use behringer_x_air::BehringerXAir;
 pub use mixer::{
-    ChannelMeter, ChannelMeterStream, ChannelUpdate, ChannelUpdateStream, MeterSample, MeterStream,
-    MeterStreamId, Mixer, MixerInfo, MixerStatus, SendUpdate, SendUpdateStream,
+    AccessPointSecurity, AutomixGroup, ChannelMeter, ChannelMeterStream, ChannelUpdate,
+    ChannelUpdateStream, ClockRate, DynamicsDetector, DynamicsEnvelope, DynamicsFilterType,
+    DynamicsKeySource, DynamicsMode, DynamicsRatio, DynamicsTarget, EqBandType, EqMode, EqTarget,
+    FxType, GateMode, InfrastructureMode, InputSource, InsertFxSlot, LanMode, MainOutputSource,
+    MeterSample, MeterStream, MeterStreamId, Mixer, MixerColor, MixerInfo, MixerSendDestination,
+    MixerSendSource, MixerStatus, NetworkCandidate, NetworkMode, OutputPosition, ParameterUpdate,
+    ParameterUpdateStream, ParameterValue, RecorderState, ReturnTarget, RoutingOutput,
+    RoutingSource, RtaPosition, RtaSource, SendTap, SendUpdate, SendUpdateStream, SoloMode,
+    SoloSource, StereoReturnTarget, StripTarget, TypedMeterSample, TypedMeterStream,
+    UsbInputSource, UsbInterfaceMode, UsbStereoSource, WifiSecurity,
 };

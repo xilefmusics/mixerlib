@@ -4,20 +4,24 @@ The default reference for the OSC message format is the [Open Sound Control Spec
 
 ## Protocol and library feature matrix
 
-This matrix compares the firmware 1.11-or-higher protocol described in the [official AIR-Series OSC documentation](https://mediadl.musictribe.com/download/software/midas/M-AIR/M%20AIR%20Remote%20Control%20Protocol.pdf) with the `BehringerXAir` implementation. The protocol supports generic parameter paths; the vendor's `Parameters.txt` file defines the complete path list and parameter ranges. The library exposes a fixed subset through `Mixer` methods and does not provide a public arbitrary-path OSC client.
+This guide compares the firmware 1.11-or-higher protocol described in the [official X AIR OSC protocol](https://mediadl.musictribe.com/download/software/behringer/XAIR/X%20AIR%20Remote%20Control%20Protocol.pdf) with `BehringerXAir`. The vendor's `Parameters.txt` catalog is the source for OSC paths, types, ranges, availability, and model differences. The library exposes the user-facing control families in that catalog through typed `Mixer` methods; it does not expose arbitrary-path GET/SET calls.
 
 In the request-level matrix, **Supported**, **Partial**, and **Not exposed** describe coverage by this library. GET requests for parameter paths use the `,` type tag with no arguments; SET requests show the argument type and value.
 
 | Protocol feature | Protocol capability | Library coverage |
 | --- | --- | --- |
 | UDP transport and OSC messages | Mixer listens on UDP port `10024`; OSC values use standard OSC types and encoding. | **Supported** for the library's implemented paths. |
-| Generic parameter GET and SET | Read or write a parameter at any valid OSC path; a GET response echoes the value and path. | **Partial.** Fixed `Mixer` methods send and receive supported floats, integers, and strings. Arbitrary paths are not exposed; blob decoding is available for meter streams. |
+| Generic parameter GET and SET | Read or write a parameter at any valid OSC path; a GET response echoes the value and path. | **Partial by design.** Typed `Mixer` methods expose the documented user-facing control paths. Arbitrary-path GET/SET is not exposed; blobs are decoded for meter streams. |
 | Mixer information | `/info` and `/xinfo` return the device name, model, firmware version, and implementation-specific fields. | **Partial.** `info()` requests `/xinfo`; replies to `/xinfo` and `/info` are parsed. |
 | Server status | `/status` reports whether the server is active or on standby, along with its address and name. | **Supported.** `status()` returns state, IP address, and server name. |
-| Parameter change subscription | `/xremote` streams parameter changes to up to eight clients; a subscription expires after ten seconds. | **Partial.** Streams filter channel, Aux/Main/FX fader, DCA, and supported send updates. They renew every five seconds while `recv()` is called; arbitrary parameter subscriptions are not exposed. |
-| Selected-channel meters | `/meters` can subscribe to `/meters/0` for one channel's eight meter values. | **Supported.** The generic stream preserves all eight signed samples; `ChannelMeter` remains a convenience view of pre/post L/R levels. |
-| Aggregate and specialized meters | `/meters/1`–`/meters/9` cover all-channel, input, FX, RTA, output, dynamics, automix, DCA, and recorder meters. | **Supported.** The generic meter stream returns the raw signed values from each selected stream. |
+| Parameter change subscription | `/xremote` streams parameter changes to up to eight clients; a subscription expires after ten seconds. | **Supported.** Typed streams decode the supported fader/send views; `subscribe_parameter_updates()` returns every decoded OSC address and value. Streams renew every five seconds while `recv()` is called. |
+| Selected-channel meters | `/meters` can subscribe to `/meters/0` for one channel's eight meter values. | **Supported.** The raw stream preserves all eight signed samples; typed results convert them to dBFS and retain channel order. `ChannelMeter` remains a pre/post L/R convenience view. |
+| Aggregate and specialized meters | `/meters/1`–`/meters/9` cover all-channel, input, FX, RTA, output, dynamics, automix, DCA, and recorder meters. | **Supported.** Raw and typed variants cover each catalog stream; typed results preserve packet order and convert signed values from 1/256 dB. |
 | Snapshots | `/snap/` and `/01/`–`/64/` paths support snapshot names, recall scopes, save, load, and delete. | **Supported.** Snapshot name and scope can be read or set; slots can be saved, loaded, or deleted. |
+| Channel and return processing | `/ch`, `/rtn`, `/bus`, and `/lr` parameter families define input, preamp, gate, dynamics, insert, parametric/graphic EQ, and mix controls. | **Supported.** Typed GET/SET methods cover channel processing, return trims/source switches, bus/Main dynamics and EQ, inserts, and channel automix. Values are validated against catalog ranges. |
+| Effects, sends, and routing | `/fx`, `/fxsend`, `/mix`, and `/config/routing` define effect engines, sends, and output routing. | **Supported.** Typed FX engine parameters, send level/group/tap/pan, and output source/position methods follow catalog indices and model limits. FX parameter meanings remain algorithm-specific. |
+| Recorder, monitor, mixer, and network configuration | `/-stat`, `/-prefs`, and `/config` include recorder, solo/monitor/RTA, mixer settings, linking, and network controls. | **Supported** for cataloged OSC controls implemented by this crate. USB stereo recorder paths are available only on XR12/MR12/XR16; network and routing capabilities vary by model. |
+| USB audio and MIDI | USB audio streams audio; MIDI uses a separate control/transport interface. | **Outside this OSC library.** This implementation handles OSC control messages over UDP only. |
 
 | Mixer feature | UDP GET request | UDP SET request | Subscription request | Library coverage |
 | --- | --- | --- | --- | --- |
@@ -37,19 +41,42 @@ In the request-level matrix, **Supported**, **Partial**, and **Not exposed** des
 | Main LR fader | `/lr/mix/fader ,` | `/lr/mix/fader ,f <0.0..1.0>` | `/xremote ,` | **Supported.** Normalized and dB GET/SET; fader update stream. |
 | FX return fader (`f` = `1`–`4`) | `/rtn/f/mix/fader ,` | `/rtn/f/mix/fader ,f <0.0..1.0>` | `/xremote ,` | **Supported.** Normalized and dB GET/SET; fader update stream. |
 | DCA label/fader/mute (`d` = `1`–`4`) | `/dca/d/config/name ,`, `/dca/d/fader ,`, `/dca/d/on ,` | Name: `,s <label>`; fader: `,f <0.0..1.0>`; mute: `,i <0|1>` (`0` = muted) | `/xremote ,` | **Supported.** GET/SET and DCA update stream for label, fader, and mute. |
-| Channel-to-bus send (`b` = `01`–`06`) | `/ch/nn/mix/b/level ,` and `/ch/nn/mix/b/on ,` | Level: `,f <0.0..1.0>`; enabled: `,i <0|1>` | `/xremote ,` | **Supported.** GET/SET, dB helpers, and level/enabled update stream. |
-| Channel-to-FX send (`x` = `1`–`4`, destination `mm` = `x + 6`) | `/ch/nn/mix/mm/level ,` and `/ch/nn/mix/mm/on ,` | Level: `,f <0.0..1.0>`; enabled: `,i <0|1>` | `/xremote ,` | **Supported.** GET/SET, dB helpers, and level/enabled update stream. |
-| Aux-to-bus send (`b` = `01`–`06`) | `/rtn/aux/mix/b/level ,` | `/rtn/aux/mix/b/level ,f <0.0..1.0>` | `/xremote ,` | **Partial.** Level GET/SET and level update stream; per-send enabled state is not exposed. |
-| Aux send enabled state or Aux-to-FX send | No individual request path is exposed by this implementation. | No individual request path is exposed by this implementation. | — | **Not exposed.** Corresponding `Mixer` methods return `Unsupported`. |
+| Channel-to-bus send (`b` = `01`–`06`) | `/ch/nn/mix/b/level ,` and `/ch/nn/mix/b/grpon ,` | Level: `,f <0.0..1.0>`; group: `,i <0|1>` | `/xremote ,` | **Supported.** GET/SET, dB helpers, and level/group update stream; tap is also available. |
+| Channel-to-FX send (`x` = `1`–`4`, destination `mm` = `x + 6`) | `/ch/nn/mix/mm/level ,` and `/ch/nn/mix/mm/grpon ,` | Level: `,f <0.0..1.0>`; group: `,i <0|1>` | `/xremote ,` | **Supported.** GET/SET, dB helpers, and level/group update stream; tap is also available. |
+| Stereo Aux and FX-return sends | `/rtn/aux/mix/mm/level ,` and `/rtn/{fx}/mix/mm/level ,` with matching `/grpon` paths (`mm` = `01`–`10`) | Level: `,f <0.0..1.0>`; group: `,i <0|1>` | `/xremote ,` | **Supported.** GET/SET, dB helpers, group/tap control, pan where cataloged, and level/group update stream. |
 | Selected-channel meters | — | — | `/meters ,si "/meters/0" <channel - 1>`; mixer returns `/meters/0` blob updates. | **Supported.** `MeterSample` preserves all eight raw values; `ChannelMeter` returns pre/post L/R dBFS. |
 | Other meter streams | — | — | `/meters ,s "/meters/1"` through `/meters/9` (stream-specific data); mixer returns a blob on the selected meter path. | **Supported.** `MeterSample` preserves the variable-length raw values for all IDs 1–9. |
 | Server status | `/status ,` | — | — | **Supported.** `status()` parses state, IP address, and server name. |
 | Snapshots | `/snap/name ,`, `/snap/index ,`, and `/{01..64}/name ,` or `/{01..64}/scope ,` | `/snap/name ,s <name>`, `/snap/load ,i <index>`, `/snap/save ,i <index>`, `/snap/delete ,i <index>`, and `/{01..64}/name ,s <name>` or `/{01..64}/scope ,s <scope>` | — | **Supported.** Name/scope GET/SET and slot save/load/delete are available. |
-| Other processing and routing | Generic GET at a valid vendor parameter path | Generic SET at a valid vendor parameter path with its OSC value type | `/xremote ,` broadcasts parameter changes | **Not exposed through `Mixer`.** The API has no methods for EQ, dynamics, FX editing, input/source or output routing, recorder, or automix controls. |
+| Channel processing and automix | `/ch/nn/config`, `/preamp`, `/gate`, `/dyn`, `/insert`, `/eq`, `/mix`, `/grp`, `/automix` | Catalog-specific `f`, `i`, and `s` values | `/xremote ,` | **Supported** through typed `Mixer` methods, including input source, preamp, gate, dynamics, four-band EQ, insert, mix assignment, and automix group/weight. |
+| Bus and Main LR processing | `/bus/nn/{dyn,insert,eq,geq,mix}` and `/lr/{dyn,insert,eq,geq,mix}` | Catalog-specific `f` and `i` values | `/xremote ,` | **Supported** through typed dynamics, insert, six-band parametric EQ, and 31-band graphic EQ methods. |
+| FX engines | `/fx/n/type`, `/fx/n/insert`, `/fx/n/par/01..64` | Type and insert are OSC integers; parameters are OSC floats | `/xremote ,` | **Supported.** FX type, insert, and normalized parameter slots 1–64 are exposed; parameter meaning depends on the selected algorithm. |
+| Input/output patching | Main/headphones: `/config/routing/main/01..02/src`; Aux, P16, and USB: `/config/routing/{aux,p16,usb}/nn/{src,pos}` | OSC integers using catalog enum indices | `/xremote ,` | **Supported** with source/position enums and per-model output validation. Main/headphone routes have no position parameter. |
+| Monitor, RTA, recorder, network, and mixer settings | `/config`, `/-prefs`, `/-stat` | Catalog-specific `f`, `i`, and `s` values | `/xremote ,` | **Supported** through typed settings methods. Recorder paths return `Unsupported` on XR18/X18/MR18. |
 
 Parameter reads use an OSC message with no arguments (`,`); SET examples show the OSC type tag and value. Meter subscription requests carry their own arguments as shown. Writes send one UDP packet and do not wait for acknowledgement. `/xremote ,` sends parameter changes to the subscription socket; library streams filter those messages to the selected target.
 
 Supported model profiles are XR12, MR12, XR16, XR18, X18, and MR18. See [Mixer inventory](#mixer-inventory) for their configured counts.
+
+## Catalog coverage, values, and model limits
+
+OSC paths use the vendor's `Parameters.txt` naming and zero/one-based indices. Rust discrete values use public enums with `TryFrom<i32>` and `From<Enum> for i32`; the CLI accepts their catalog integer values. Float setters validate the physical value and map it to the catalog's normalized OSC float range.
+
+| Control family | OSC paths and catalog value coverage |
+| --- | --- |
+| Channel input and preamp | `/ch/nn/config/insrc` uses the catalog input-source indices; `/ch/nn/config/rtnsrc` selects USB input 1–18 on XR18/X18/MR18; `/headamp/nn/gain` is -12 to +60 dB in 0.5 dB steps; phantom is an OSC integer boolean. Preamp controls return `Unsupported` where that model has no preamp for the channel. |
+| High-pass, gate, and channel dynamics | High-pass is 20–400 Hz. Gate threshold is -80–0 dB, range 3–60 dB, attack 0–120 ms, hold 0.02–2000 ms, release 5–4000 ms, and filter frequency 20–20000 Hz. Dynamics threshold is -60–0 dB, knee 0–5 dB, makeup gain 0–24 dB, attack 0–120 ms, hold 0.02–2000 ms, release 5–4000 ms, mix 0–100%, and key/filter selectors use catalog enums. |
+| Parametric EQ and graphic EQ | EQ frequency is 20–20000 Hz, gain -15–+15 dB, and Q 0.3–10. Channels and returns have four parametric bands; buses and Main LR have six. Bus and Main graphic bands use the 31 catalog center-frequency path tokens (`20`, `25`, `31_5`, …, `1k`, `1k25`, …, `20k`) with -15–+15 dB gain. |
+| Automix and inserts | Channel automix group is OFF/X/Y; weight is -24–+24 dB. Group X/Y enable and lock use integer booleans. Insert enable is an integer boolean; insert slots are OFF or FX1A–FX4B, with Main LR limited to OFF or FX1–FX4. |
+| Strip mix and sends | Faders and send levels are OSC floats from 0.0 to 1.0. Mute, solo, Main LR assignment, send group-enable, and link flags use OSC integer booleans. Pan is 0.0–1.0. Send taps are the six catalog values; bus-send pan exists on odd-numbered buses 1, 3, and 5. |
+| FX engines | Type is an integer enum 0–60, insert is an integer boolean, and parameter slots are 1–64. Parameter floats are normalized; their value and meaning depend on the selected FX algorithm. |
+| Routing | Aux and P16 source indices are 0–55; their positions are 0–10. Main and headphone source indices are 0–10, with USB source selections above index 2 available on XR18/X18/MR18. USB output sources are 0–37 and positions 0–10. USB outputs 1–2 are common to supported models; USB 3–18 and P16 are XR18/X18/MR18 only. Available analog Aux outputs depend on model. |
+| Network and recorder | IP address octets are 0–255; AP channels are 1–11; AP SSIDs are at most 32 bytes; WEP keys are 5 or 13 bytes. Network scan entries are 1–10. Recorder times are seconds; entry indices are 1–200. USB stereo recorder parameters exist on XR12/MR12/XR16 and return `Unsupported` on XR18/X18/MR18. |
+| Meter streams | Meter IDs 0–9 have catalog counts 8, 40, 36, 56, 100, 44, 39, 16, 4, and 4. Raw samples remain signed `i16`; typed samples divide by 256 to dBFS and preserve the catalog packet order. |
+
+`/xremote` can deliver changes for any catalog path. `subscribe_parameter_updates()` returns each supported OSC scalar with its address and original value kind, including messages sent directly at the parameter path and `/status` replies. The narrower channel, fader, and send streams decode common values into their typed views. GET parsers accept both reply styles. All SET methods send OSC without waiting for a write acknowledgement; bit-mask membership updates first read the current mask so other group bits are preserved.
+
+USB input/output patching, USB audio sample streaming, and MIDI transport are separate concerns. This library implements OSC patch and configuration parameters only; it does not carry USB audio or MIDI data.
 
 ## Behringer X AIR channel controls over UDP
 
@@ -72,10 +99,10 @@ Send UDP messages to `<mixer-IP>:10024`, as specified in the [official X AIR Mix
 | Set DCA `n` fader, mute, or name | `/dca/n/fader ,f x`, `/dca/n/on ,i x`, or `/dca/n/config/name ,s name` |
 | GET mute group `n` active state | `/config/mute/n ,` for mute groups 1–4 |
 | Set mute group `n` active state | `/config/mute/n ,i x` for mute groups 1–4 |
-| GET channel `n` bus send `b` level/state | `/ch/nn/mix/bb/level ,` and `/ch/nn/mix/bb/on ,` for buses 1–6 |
-| Set channel `n` bus send `b` level/state | `/ch/nn/mix/bb/level ,f x` and `/ch/nn/mix/bb/on ,i x` |
-| GET channel `n` FX send `f` level/state | `/ch/nn/mix/mm/level ,` and `/ch/nn/mix/mm/on ,` where `mm = f + 6` |
-| Set channel `n` FX send `f` level/state | `/ch/nn/mix/mm/level ,f x` and `/ch/nn/mix/mm/on ,i x` for FX sends 1–4 |
+| GET channel `n` bus send `b` level/state | `/ch/nn/mix/bb/level ,` and `/ch/nn/mix/bb/grpon ,` for buses 1–6 |
+| Set channel `n` bus send `b` level/state | `/ch/nn/mix/bb/level ,f x` and `/ch/nn/mix/bb/grpon ,i x` |
+| GET channel `n` FX send `f` level/state | `/ch/nn/mix/mm/level ,` and `/ch/nn/mix/mm/grpon ,` where `mm = f + 6` |
+| Set channel `n` FX send `f` level/state | `/ch/nn/mix/mm/level ,f x` and `/ch/nn/mix/mm/grpon ,i x` for FX sends 1–4 |
 | GET stereo Aux bus send `b` level | `/rtn/aux/mix/bb/level ,` for buses 1–6 |
 | Set stereo Aux bus send `b` level | `/rtn/aux/mix/bb/level ,f x` |
 | GET channel `n` preamp gain | `/headamp/nn/gain ,` (no arguments) |
@@ -160,11 +187,11 @@ The `BehringerXAir` implementation maps the public `Mixer` trait methods to thes
 | `subscribe_dca_updates(dca)` | `/xremote ,` | Streams DCA label, mute, and fader changes as `ChannelUpdate` values. |
 | `get_channel_bus_send(channel, bus)` / `set_channel_bus_send(channel, bus, value)` | `/ch/nn/mix/bb/level` | Reads or sets normalized send level for buses 1–6. Values must be finite and from `0.0` to `1.0`. |
 | `get_channel_bus_send_db(channel, bus)` / `set_channel_bus_send_db(channel, bus, value)` | `/ch/nn/mix/bb/level` | Reads or sets the send level using the X AIR fader dB taper. dB writes accept finite values and clamp through the shared taper. |
-| `get_channel_bus_send_enabled(channel, bus)` / `set_channel_bus_send_enabled(channel, bus, enabled)` | `/ch/nn/mix/bb/on` | Reads or sets whether the channel send to bus 1–6 is on. |
+| `get_channel_bus_send_enabled(channel, bus)` / `set_channel_bus_send_enabled(channel, bus, enabled)` | `/ch/nn/mix/bb/grpon` | Reads or sets the channel send group flag for bus 1–6. |
 | `subscribe_channel_bus_send_updates(channel, bus)` | `/xremote ,` | Streams level and enabled-state changes for the selected send as `SendUpdate` values. |
 | `get_channel_fx_send(channel, fx)` / `set_channel_fx_send(channel, fx, value)` | `/ch/nn/mix/mm/level`, `mm = fx + 6` | Reads or sets normalized send level for FX sends 1–4. Values must be finite and from `0.0` to `1.0`. |
 | `get_channel_fx_send_db(channel, fx)` / `set_channel_fx_send_db(channel, fx, value)` | `/ch/nn/mix/mm/level`, `mm = fx + 6` | Reads or sets the send level using the X AIR fader dB taper. |
-| `get_channel_fx_send_enabled(channel, fx)` / `set_channel_fx_send_enabled(channel, fx, enabled)` | `/ch/nn/mix/mm/on`, `mm = fx + 6` | Reads or sets whether the channel FX send 1–4 is on. |
+| `get_channel_fx_send_enabled(channel, fx)` / `set_channel_fx_send_enabled(channel, fx, enabled)` | `/ch/nn/mix/mm/grpon`, `mm = fx + 6` | Reads or sets the channel FX send group flag for FX sends 1–4. |
 | `subscribe_channel_fx_send_updates(channel, fx)` | `/xremote ,` | Streams level and enabled-state changes for the selected FX send as `SendUpdate` values. |
 | `get_aux_bus_send(bus)` / `set_aux_bus_send(bus, value)` | `/rtn/aux/mix/bb/level` | Reads or sets normalized Aux-to-bus send level for buses 1–6. Values must be finite and from `0.0` to `1.0`. |
 | `get_aux_bus_send_db(bus)` / `set_aux_bus_send_db(bus, value)` | `/rtn/aux/mix/bb/level` | Reads or sets Aux-to-bus send level using the X AIR fader dB taper. |
@@ -190,11 +217,11 @@ The stream resends its subscription every five seconds while it is being read. `
 
 ## Bus and effect sends
 
-Channel bus sends use `/ch/{channel:02}/mix/{bus:02}/level` and `/on`, with channel numbers 1–16 and bus numbers 1–6. Channel FX sends use the same paths with mix destination numbers 7–10 for FX sends 1–4. Level reads and updates include the normalized OSC value and its dB conversion; dB writes use the same finite-value check and taper as fader dB writes. Enabled-state reads and writes use OSC integer values `0` and `1`.
+Channel bus sends use `/ch/{channel:02}/mix/{bus:02}/level` and `/grpon`, with channel numbers 1–16 and bus numbers 1–6. Channel FX sends use the same paths with mix destination numbers 7–10 for FX sends 1–4. Level reads and updates include the normalized OSC value and its dB conversion; dB writes use the same finite-value check and taper as fader dB writes. Group-enabled reads and writes use OSC integer values `0` and `1`.
 
 `subscribe_channel_bus_send_updates(channel, bus)` and `subscribe_channel_fx_send_updates(channel, fx)` use dedicated `/xremote` sockets and filter updates to the selected level and enabled-state paths. They return `SendUpdate::Level { value, db }` or `SendUpdate::Enabled(bool)`. Subscriptions are renewed every five seconds while `SendUpdateStream::recv()` is called, use the one-second response timeout, and stop when the stream is dropped.
 
-The stereo Aux input supports bus send levels at `/rtn/aux/mix/{bus:02}/level`. The X AIR implementation does not expose per-send Aux enabled-state operations because its documented control is a group flag, and it does not expose Aux-to-FX operations. The corresponding `Mixer` methods exist and return `Unsupported` for these operations. Other mixer implementations may provide them.
+The stereo Aux and FX returns support bus and FX sends under `/rtn/aux/mix/{destination:02}` and `/rtn/{fx}/mix/{destination:02}`. Send group enable uses `/grpon`; tap uses `/tap`; the catalog's odd-numbered bus sends also have `/pan`. FX send strips have their own fader and mute controls under `/fxsend/{fx}/mix`. The generic strip API exposes fader, mute, pan where present, solo, LR assignment where present, labels, colors, and DCA/mute group membership.
 
 Bus labels use `/bus/{bus}/config/name`. Bus-master faders and mute use `/bus/{bus}/mix/fader` and `/bus/{bus}/mix/on` for buses 1–6. The bus fader supports normalized values and dB conversion; bus mute uses the inverted OSC `on` value. `subscribe_bus_updates()` filters `/xremote` changes to the selected bus fader and mute paths.
 

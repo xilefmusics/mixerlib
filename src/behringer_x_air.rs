@@ -3,8 +3,14 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 use crate::{
-    ChannelMeter, ChannelMeterStream, ChannelUpdate, ChannelUpdateStream, MeterSample, MeterStream,
-    MeterStreamId, Mixer, MixerInfo, MixerStatus, SendUpdate, SendUpdateStream,
+    AutomixGroup, ChannelMeter, ChannelMeterStream, ChannelUpdate, ChannelUpdateStream, ClockRate,
+    DynamicsDetector, DynamicsEnvelope, DynamicsFilterType, DynamicsKeySource, DynamicsMode,
+    DynamicsRatio, DynamicsTarget, EqBandType, EqTarget, FxType, GateMode, InfrastructureMode,
+    InputSource, InsertFxSlot, LanMode, MainOutputSource, MeterSample, MeterStream, MeterStreamId,
+    Mixer, MixerInfo, MixerSendDestination, MixerSendSource, MixerStatus, NetworkMode,
+    OutputPosition, ParameterUpdate, ParameterUpdateStream, ParameterValue, RecorderState,
+    ReturnTarget, RoutingOutput, RoutingSource, RtaPosition, RtaSource, SendTap, SendUpdate,
+    SendUpdateStream, SoloMode, SoloSource, TypedMeterStream, WifiSecurity,
 };
 
 const X_AIR_OSC_PORT: u16 = 10024;
@@ -16,6 +22,16 @@ const MAX_DCA_GROUP: u8 = 4;
 const MAX_SNAPSHOT: u8 = 64;
 const SNAPSHOT_NAME_MAX_LENGTH: usize = 31;
 const SNAPSHOT_SCOPE_LENGTH: usize = 59;
+const GRAPHIC_EQ_FREQUENCIES: [f32; 31] = [
+    20.0, 25.0, 31.5, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0, 200.0, 250.0, 315.0, 400.0,
+    500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0, 2000.0, 2500.0, 3150.0, 4000.0, 5000.0, 6300.0,
+    8000.0, 10000.0, 12500.0, 16000.0, 20000.0,
+];
+const GRAPHIC_EQ_PATHS: [&str; 31] = [
+    "20", "25", "31_5", "40", "50", "63", "80", "100", "125", "160", "200", "250", "315", "400",
+    "500", "630", "800", "1k", "1k25", "1k6", "2k", "2k5", "3k15", "4k", "5k", "6k3", "8k", "10k",
+    "12k5", "16k", "20k",
+];
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_PACKET_SIZE: usize = 4096;
 const METER_SUBSCRIPTION_RENEW_INTERVAL: Duration = Duration::from_secs(5);
@@ -57,6 +73,7 @@ impl XAirModelConfig {
 pub struct BehringerXAir {
     socket: UdpSocket,
     model: Option<String>,
+    firmware_version: Option<String>,
     model_config: Option<XAirModelConfig>,
 }
 
@@ -78,6 +95,7 @@ impl BehringerXAir {
         Ok(Self {
             socket,
             model: None,
+            firmware_version: None,
             model_config: None,
         })
     }
@@ -98,6 +116,68 @@ impl BehringerXAir {
                 format!("mixer model `{model}` is not supported by the X AIR inventory"),
             )
         })
+    }
+
+    fn ensure_supported_firmware(&mut self) -> io::Result<()> {
+        self.model_config()?;
+        let Some(version) = self.firmware_version.as_deref() else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "X AIR controls require a readable firmware version",
+            ));
+        };
+        let Some((major, minor)) = parse_firmware_version(version) else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("unrecognized X AIR firmware version `{version}`"),
+            ));
+        };
+        if (major, minor) < (1, 11) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("X AIR OSC controls require firmware 1.11 or newer; found {version}"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_model_family(&mut self, models: &[&str], feature: &str) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let model = self
+            .model
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        if models.contains(&model.as_str()) {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("{feature} is not available on {model}"),
+            ))
+        }
+    }
+
+    fn ensure_channel_preamp(&mut self, channel: u8) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let model = self
+            .model
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        let count = match model.as_str() {
+            "XR12" | "MR12" => 4,
+            "XR16" => 8,
+            "XR18" | "X18" | "MR18" => 16,
+            _ => 0,
+        };
+        if channel == 0 || channel > count {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("channel {channel} has no controllable preamp on {model}"),
+            ));
+        }
+        Ok(())
     }
 
     fn channel_address(channel: u8, parameter: &str) -> io::Result<String> {
@@ -223,7 +303,7 @@ impl BehringerXAir {
         let base = Self::channel_address(channel, &format!("mix/{bus:02}"))?;
         Ok(XAirSendTarget {
             level_path: format!("{base}/level"),
-            enabled_path: Some(format!("{base}/on")),
+            enabled_path: Some(format!("{base}/grpon")),
         })
     }
 
@@ -239,7 +319,7 @@ impl BehringerXAir {
         let base = Self::channel_address(channel, &format!("mix/{destination:02}"))?;
         Ok(XAirSendTarget {
             level_path: format!("{base}/level"),
-            enabled_path: Some(format!("{base}/on")),
+            enabled_path: Some(format!("{base}/grpon")),
         })
     }
 
@@ -253,7 +333,22 @@ impl BehringerXAir {
 
         Ok(XAirSendTarget {
             level_path: format!("/rtn/aux/mix/{bus:02}/level"),
-            enabled_path: None,
+            enabled_path: Some(format!("/rtn/aux/mix/{bus:02}/grpon")),
+        })
+    }
+
+    fn aux_fx_send_target(fx: u8) -> io::Result<XAirSendTarget> {
+        if !(1..=MAX_FX_SEND).contains(&fx) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("FX send must be between 1 and {MAX_FX_SEND}"),
+            ));
+        }
+        let destination = fx + MAX_BUS_SEND;
+        let base = format!("/rtn/aux/mix/{destination:02}");
+        Ok(XAirSendTarget {
+            level_path: format!("{base}/level"),
+            enabled_path: Some(format!("{base}/grpon")),
         })
     }
 
@@ -329,6 +424,569 @@ impl BehringerXAir {
 
         self.socket.send(&packet)?;
         Ok(())
+    }
+
+    fn get_parameter_float(&self, address: &str) -> io::Result<f32> {
+        self.send_message(address, None)?;
+        self.receive_float_value(address)
+    }
+
+    fn set_parameter_float(&self, address: &str, value: f32) -> io::Result<()> {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR OSC float values must be finite and between 0.0 and 1.0",
+            ));
+        }
+        self.send_message(address, Some(value))
+    }
+
+    fn get_parameter_int(&self, address: &str) -> io::Result<i32> {
+        self.send_int_message(address, None)?;
+        self.receive_int_value(address)
+    }
+
+    fn set_parameter_int(&self, address: &str, value: i32) -> io::Result<()> {
+        self.send_int_message(address, Some(value))
+    }
+
+    fn get_parameter_bool(&self, address: &str) -> io::Result<bool> {
+        self.send_int_message(address, None)?;
+        self.receive_channel_bool(address)
+    }
+
+    fn set_parameter_bool(&self, address: &str, value: bool) -> io::Result<()> {
+        self.send_int_message(address, Some(i32::from(value)))
+    }
+
+    fn get_parameter_string(&self, address: &str) -> io::Result<String> {
+        self.send_message(address, None)?;
+        self.receive_channel_label(address)
+    }
+
+    fn get_scaled_float(
+        &self,
+        address: &str,
+        minimum: f32,
+        maximum: f32,
+        logarithmic: bool,
+    ) -> io::Result<f32> {
+        let value = self.get_parameter_float(address)?;
+        Ok(if logarithmic {
+            decode_log_parameter(value, minimum, maximum)
+        } else {
+            decode_linear_parameter(value, minimum, maximum)
+        })
+    }
+
+    fn get_reverse_log_float(&self, address: &str, minimum: f32, maximum: f32) -> io::Result<f32> {
+        let normalized = self.get_parameter_float(address)?;
+        Ok(maximum * (minimum / maximum).powf(normalized))
+    }
+
+    fn set_reverse_log_float(
+        &self,
+        address: &str,
+        value: f32,
+        minimum: f32,
+        maximum: f32,
+        name: &str,
+    ) -> io::Result<()> {
+        if !value.is_finite() || value < minimum || value > maximum || value <= 0.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("X AIR {name} must be between {minimum} and {maximum}"),
+            ));
+        }
+        let normalized = (value / maximum).ln() / (minimum / maximum).ln();
+        self.set_parameter_float(address, normalized)
+    }
+
+    fn set_scaled_float(
+        &self,
+        address: &str,
+        value: f32,
+        minimum: f32,
+        maximum: f32,
+        logarithmic: bool,
+        name: &str,
+    ) -> io::Result<()> {
+        let normalized = if logarithmic {
+            encode_log_parameter(value, minimum, maximum, name)?
+        } else {
+            encode_linear_parameter(value, minimum, maximum, name)?
+        };
+        self.set_parameter_float(address, normalized)
+    }
+
+    fn get_enum<T>(&self, address: &str) -> io::Result<T>
+    where
+        T: TryFrom<i32, Error = io::Error>,
+    {
+        T::try_from(self.get_parameter_int(address)?)
+    }
+
+    fn set_enum<T>(&self, address: &str, value: T) -> io::Result<()>
+    where
+        T: Into<i32>,
+    {
+        self.set_parameter_int(address, value.into())
+    }
+
+    fn get_bool_parameter(&self, address: &str) -> io::Result<bool> {
+        self.get_parameter_bool(address)
+    }
+
+    fn set_bool_parameter(&self, address: &str, enabled: bool) -> io::Result<()> {
+        self.set_parameter_bool(address, enabled)
+    }
+
+    fn get_channel_eq_band_address(channel: u8, band: u8, parameter: &str) -> io::Result<String> {
+        if !(1..=4).contains(&band) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "channel EQ band must be between 1 and 4",
+            ));
+        }
+        Self::channel_address(channel, &format!("eq/{band}/{parameter}"))
+    }
+
+    fn dynamics_address(target: DynamicsTarget, parameter: &str) -> io::Result<String> {
+        let base = match target {
+            DynamicsTarget::Channel(channel) => Self::channel_address(channel, "")?,
+            DynamicsTarget::Bus(bus) => Self::bus_address(bus, "")?,
+            DynamicsTarget::Main => "/lr/".to_string(),
+        };
+        Ok(format!("{}{}/{}", base, "dyn", parameter))
+    }
+
+    fn insert_address(target: DynamicsTarget, parameter: &str) -> io::Result<String> {
+        let base = match target {
+            DynamicsTarget::Channel(channel) => Self::channel_address(channel, "")?,
+            DynamicsTarget::Bus(bus) => Self::bus_address(bus, "")?,
+            DynamicsTarget::Main => "/lr/".to_string(),
+        };
+        Ok(format!("{}{}/{}", base, "insert", parameter))
+    }
+
+    fn return_address(target: ReturnTarget, parameter: &str) -> io::Result<String> {
+        let base = match target {
+            ReturnTarget::Channel(channel) => Self::channel_address(channel, "")?,
+            ReturnTarget::Aux => "/rtn/aux".to_string(),
+            ReturnTarget::Fx(fx) if (1..=4).contains(&fx) => format!("/rtn/{fx}"),
+            ReturnTarget::Fx(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "FX return must be between 1 and 4",
+                ));
+            }
+        };
+        Ok(format!("{base}/{parameter}"))
+    }
+
+    fn mixer_send_base_address(
+        source: MixerSendSource,
+        destination: MixerSendDestination,
+    ) -> io::Result<String> {
+        let source_base = match source {
+            MixerSendSource::Channel(channel) => Self::channel_address(channel, "")?,
+            MixerSendSource::AuxReturn => "/rtn/aux/".to_string(),
+            MixerSendSource::FxReturn(fx) if (1..=4).contains(&fx) => format!("/rtn/{fx}/"),
+            MixerSendSource::FxReturn(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "FX return must be between 1 and 4",
+                ));
+            }
+        };
+        let index = match destination {
+            MixerSendDestination::Bus(bus) if (1..=MAX_BUS_SEND).contains(&bus) => bus,
+            MixerSendDestination::Fx(fx) if (1..=MAX_FX_SEND).contains(&fx) => MAX_BUS_SEND + fx,
+            MixerSendDestination::Bus(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "bus send destination must be between 1 and 6",
+                ));
+            }
+            MixerSendDestination::Fx(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "FX send destination must be between 1 and 4",
+                ));
+            }
+        };
+        Ok(format!("{source_base}mix/{index:02}"))
+    }
+
+    fn strip_base_address(target: crate::StripTarget) -> io::Result<String> {
+        let base = match target {
+            crate::StripTarget::Channel(channel) => return Self::channel_address(channel, ""),
+            crate::StripTarget::AuxReturn => "/rtn/aux/".to_string(),
+            crate::StripTarget::FxReturn(fx) if (1..=4).contains(&fx) => format!("/rtn/{fx}/"),
+            crate::StripTarget::FxReturn(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "FX return must be between 1 and 4",
+                ));
+            }
+            crate::StripTarget::Bus(bus) => return Self::bus_address(bus, ""),
+            crate::StripTarget::FxSend(fx) if (1..=4).contains(&fx) => format!("/fxsend/{fx}/"),
+            crate::StripTarget::FxSend(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "FX send must be between 1 and 4",
+                ));
+            }
+            crate::StripTarget::Main => "/lr/".to_string(),
+            crate::StripTarget::Dca(dca) => return Self::dca_address(dca, ""),
+        };
+        Ok(base)
+    }
+
+    fn strip_parameter_address(target: crate::StripTarget, parameter: &str) -> io::Result<String> {
+        let base = Self::strip_base_address(target)?;
+        Ok(format!("{base}config/{parameter}"))
+    }
+
+    fn strip_mix_address(target: crate::StripTarget, parameter: &str) -> io::Result<String> {
+        if let crate::StripTarget::Dca(dca) = target {
+            return match parameter {
+                "fader" | "on" => Self::dca_address(dca, parameter),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "DCA strips do not have this mix parameter",
+                )),
+            };
+        }
+        Ok(format!(
+            "{}mix/{parameter}",
+            Self::strip_base_address(target)?
+        ))
+    }
+
+    fn strip_solo_address(target: crate::StripTarget) -> io::Result<String> {
+        let index = match target {
+            crate::StripTarget::Channel(channel) if (1..=16).contains(&channel) => channel,
+            crate::StripTarget::Channel(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "channel must be between 1 and 16",
+                ));
+            }
+            crate::StripTarget::AuxReturn => 17,
+            crate::StripTarget::FxReturn(fx) if (1..=4).contains(&fx) => 17 + fx,
+            crate::StripTarget::FxReturn(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "FX return must be between 1 and 4",
+                ));
+            }
+            crate::StripTarget::Bus(bus) if (1..=6).contains(&bus) => 39 + bus,
+            crate::StripTarget::Bus(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "bus must be between 1 and 6",
+                ));
+            }
+            crate::StripTarget::FxSend(fx) if (1..=4).contains(&fx) => 45 + fx,
+            crate::StripTarget::FxSend(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "FX send must be between 1 and 4",
+                ));
+            }
+            crate::StripTarget::Main => 50,
+            crate::StripTarget::Dca(dca) if (1..=4).contains(&dca) => 50 + dca,
+            crate::StripTarget::Dca(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "DCA must be between 1 and 4",
+                ));
+            }
+        };
+        Ok(format!("/-stat/solosw/{index:02}"))
+    }
+
+    fn strip_group_address(target: crate::StripTarget, kind: &str) -> io::Result<String> {
+        if !matches!(kind, "dca" | "mute") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "group kind must be dca or mute",
+            ));
+        }
+        if matches!(target, crate::StripTarget::Dca(_)) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "DCA strips do not have group assignment parameters",
+            ));
+        }
+        if let crate::StripTarget::Bus(bus) = target {
+            Self::bus_address(bus, "")?;
+            return Ok(format!("/bus/grp/{kind}"));
+        }
+        Ok(format!("{}grp/{kind}", Self::strip_base_address(target)?))
+    }
+
+    fn get_group_bit(&self, address: &str, group: u8) -> io::Result<bool> {
+        let mask = self.get_parameter_int(address)?;
+        if !(0..=15).contains(&mask) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "group assignment mask was outside 0..15",
+            ));
+        }
+        Ok(mask & (1 << (group - 1)) != 0)
+    }
+
+    fn set_group_bit(&self, address: &str, group: u8, assigned: bool) -> io::Result<()> {
+        let current = self.get_parameter_int(address)?;
+        if !(0..=15).contains(&current) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "group assignment mask was outside 0..15",
+            ));
+        }
+        let bit = 1 << (group - 1);
+        let updated = if assigned {
+            current | bit
+        } else {
+            current & !bit
+        };
+        self.set_parameter_int(address, updated)
+    }
+
+    fn get_ipv4_preference(&self, prefix: &str) -> io::Result<std::net::Ipv4Addr> {
+        let mut octets = [0_u8; 4];
+        for (index, octet) in octets.iter_mut().enumerate() {
+            let address = format!("{prefix}/{index}");
+            let value = self.get_parameter_int(&address)?;
+            *octet = u8::try_from(value).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "X AIR network octet was outside the 0..255 range",
+                )
+            })?;
+        }
+        Ok(std::net::Ipv4Addr::from(octets))
+    }
+
+    fn set_ipv4_preference(&self, prefix: &str, address: std::net::Ipv4Addr) -> io::Result<()> {
+        for (index, octet) in address.octets().into_iter().enumerate() {
+            self.set_parameter_int(&format!("{prefix}/{index}"), i32::from(octet))?;
+        }
+        Ok(())
+    }
+
+    fn get_network_string(&self, path: &str) -> io::Result<String> {
+        self.get_parameter_string(path)
+    }
+
+    fn set_network_string(
+        &self,
+        path: &str,
+        value: &str,
+        max_length: usize,
+        name: &str,
+    ) -> io::Result<()> {
+        validate_catalog_string(value, max_length, name)?;
+        self.send_string_message(path, value)
+    }
+
+    fn eq_address(target: EqTarget, parameter: &str) -> io::Result<String> {
+        let base = match target {
+            EqTarget::Channel(channel) => Self::channel_address(channel, "")?,
+            EqTarget::AuxReturn => "/rtn/aux/".to_string(),
+            EqTarget::FxReturn(fx) => {
+                if !(1..=4).contains(&fx) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "FX return must be between 1 and 4",
+                    ));
+                }
+                format!("/rtn/{fx}/")
+            }
+            EqTarget::Bus(bus) => Self::bus_address(bus, "")?,
+            EqTarget::Main => "/lr/".to_string(),
+        };
+        Ok(format!("{}{}/{}", base, "eq", parameter))
+    }
+
+    fn get_dynamics_key_source_for(&self, target: DynamicsTarget) -> io::Result<DynamicsKeySource> {
+        if matches!(target, DynamicsTarget::Main) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "main dynamics has no key-source control",
+            ));
+        }
+        self.get_enum(&Self::dynamics_address(target, "keysrc")?)
+    }
+
+    fn set_dynamics_key_source_for(
+        &self,
+        target: DynamicsTarget,
+        source: DynamicsKeySource,
+    ) -> io::Result<()> {
+        if matches!(target, DynamicsTarget::Main) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "main dynamics has no key-source control",
+            ));
+        }
+        self.set_enum(&Self::dynamics_address(target, "keysrc")?, source)
+    }
+
+    fn eq_band_address(target: EqTarget, band: u8, parameter: &str) -> io::Result<String> {
+        let count = match target {
+            EqTarget::Channel(_) | EqTarget::AuxReturn | EqTarget::FxReturn(_) => 4,
+            EqTarget::Bus(_) | EqTarget::Main => 6,
+        };
+        if band == 0 || band > count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("EQ band must be between 1 and {count} for this strip"),
+            ));
+        }
+        Self::eq_address(target, &format!("{band}/{parameter}"))
+    }
+
+    fn graphic_eq_address(target: EqTarget, frequency_hz: f32) -> io::Result<String> {
+        let Some(index) = GRAPHIC_EQ_FREQUENCIES
+            .iter()
+            .position(|frequency| *frequency == frequency_hz)
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "graphic EQ frequency must be one of the 31 catalog bands",
+            ));
+        };
+        let path = GRAPHIC_EQ_PATHS[index];
+        match target {
+            EqTarget::Bus(bus) => Self::bus_address(bus, &format!("geq/{path}")),
+            EqTarget::Main => Ok(format!("/lr/geq/{path}")),
+            _ => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "graphic EQ is available only on buses and Main LR",
+            )),
+        }
+    }
+
+    fn ensure_usb_recorder(&mut self) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        match self
+            .model
+            .as_deref()
+            .map(str::to_ascii_uppercase)
+            .as_deref()
+        {
+            Some("XR12" | "MR12" | "XR16") => Ok(()),
+            Some(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "USB stereo recorder controls are not available on this model",
+            )),
+            None => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "USB stereo recorder controls require a supported model",
+            )),
+        }
+    }
+
+    fn ensure_routing_output(&mut self, output: crate::RoutingOutput) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let model = self
+            .model
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        match output {
+            RoutingOutput::MainLeft | RoutingOutput::Headphones => Ok(()),
+            RoutingOutput::Aux1 | RoutingOutput::Aux2 => Ok(()),
+            RoutingOutput::Aux3 | RoutingOutput::Aux4 if model != "XR12" && model != "MR12" => {
+                Ok(())
+            }
+            RoutingOutput::Aux5 | RoutingOutput::Aux6
+                if matches!(model.as_str(), "XR18" | "X18" | "MR18") =>
+            {
+                Ok(())
+            }
+            crate::RoutingOutput::P16_1
+            | crate::RoutingOutput::P16_2
+            | crate::RoutingOutput::P16_3
+            | crate::RoutingOutput::P16_4
+            | crate::RoutingOutput::P16_5
+            | crate::RoutingOutput::P16_6
+            | crate::RoutingOutput::P16_7
+            | crate::RoutingOutput::P16_8
+            | crate::RoutingOutput::P16_9
+            | crate::RoutingOutput::P16_10
+            | crate::RoutingOutput::P16_11
+            | crate::RoutingOutput::P16_12
+            | crate::RoutingOutput::P16_13
+            | crate::RoutingOutput::P16_14
+            | crate::RoutingOutput::P16_15
+            | crate::RoutingOutput::P16_16
+                if matches!(model.as_str(), "XR18" | "X18" | "MR18") =>
+            {
+                Ok(())
+            }
+            RoutingOutput::Usb1 | RoutingOutput::Usb2 => Ok(()),
+            crate::RoutingOutput::Usb3
+            | crate::RoutingOutput::Usb4
+            | crate::RoutingOutput::Usb5
+            | crate::RoutingOutput::Usb6
+            | crate::RoutingOutput::Usb7
+            | crate::RoutingOutput::Usb8
+            | crate::RoutingOutput::Usb9
+            | crate::RoutingOutput::Usb10
+            | crate::RoutingOutput::Usb11
+            | crate::RoutingOutput::Usb12
+            | crate::RoutingOutput::Usb13
+            | crate::RoutingOutput::Usb14
+            | crate::RoutingOutput::Usb15
+            | crate::RoutingOutput::Usb16
+            | crate::RoutingOutput::Usb17
+            | crate::RoutingOutput::Usb18
+                if matches!(model.as_str(), "XR18" | "X18" | "MR18") =>
+            {
+                Ok(())
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("routing output {output:?} is not available on {model}"),
+            )),
+        }
+    }
+
+    fn routing_source_address(output: crate::RoutingOutput, parameter: &str) -> String {
+        use crate::RoutingOutput;
+        match output {
+            RoutingOutput::MainLeft | RoutingOutput::Headphones => {
+                let index = if output == RoutingOutput::MainLeft {
+                    1
+                } else {
+                    2
+                };
+                format!("/config/routing/main/{index:02}/{parameter}")
+            }
+            RoutingOutput::Aux1
+            | RoutingOutput::Aux2
+            | RoutingOutput::Aux3
+            | RoutingOutput::Aux4
+            | RoutingOutput::Aux5
+            | RoutingOutput::Aux6 => {
+                let index = (output as u8) - (RoutingOutput::Aux1 as u8) + 1;
+                format!("/config/routing/aux/{index:02}/{parameter}")
+            }
+            _ if (RoutingOutput::P16_1 as u8..=RoutingOutput::P16_16 as u8)
+                .contains(&(output as u8)) =>
+            {
+                let index = (output as u8) - (RoutingOutput::P16_1 as u8) + 1;
+                format!("/config/routing/p16/{index:02}/{parameter}")
+            }
+            _ => {
+                let index = (output as u8) - (RoutingOutput::Usb1 as u8) + 1;
+                format!("/config/routing/usb/{index:02}/{parameter}")
+            }
+        }
     }
 
     fn receive_float_value(&self, expected_path: &str) -> io::Result<f32> {
@@ -587,6 +1245,114 @@ impl BehringerXAir {
     }
 }
 
+macro_rules! dynamics_bool_accessors {
+    ($get:ident, $set:ident, $parameter:literal) => {
+        fn $get(&mut self, target: DynamicsTarget) -> io::Result<bool> {
+            self.ensure_supported_firmware()?;
+            self.get_bool_parameter(&Self::dynamics_address(target, $parameter)?)
+        }
+
+        fn $set(&mut self, target: DynamicsTarget, value: bool) -> io::Result<()> {
+            self.ensure_supported_firmware()?;
+            self.set_bool_parameter(&Self::dynamics_address(target, $parameter)?, value)
+        }
+    };
+}
+
+macro_rules! dynamics_enum_accessors {
+    ($get:ident, $set:ident, $type:ty, $parameter:literal) => {
+        fn $get(&mut self, target: DynamicsTarget) -> io::Result<$type> {
+            self.ensure_supported_firmware()?;
+            self.get_enum(&Self::dynamics_address(target, $parameter)?)
+        }
+
+        fn $set(&mut self, target: DynamicsTarget, value: $type) -> io::Result<()> {
+            self.ensure_supported_firmware()?;
+            self.set_enum(&Self::dynamics_address(target, $parameter)?, value)
+        }
+    };
+}
+
+macro_rules! dynamics_float_accessors {
+    ($get:ident, $set:ident, $parameter:literal, $minimum:expr, $maximum:expr, $logarithmic:expr, $name:literal) => {
+        fn $get(&mut self, target: DynamicsTarget) -> io::Result<f32> {
+            self.ensure_supported_firmware()?;
+            self.get_scaled_float(
+                &Self::dynamics_address(target, $parameter)?,
+                $minimum,
+                $maximum,
+                $logarithmic,
+            )
+        }
+
+        fn $set(&mut self, target: DynamicsTarget, value: f32) -> io::Result<()> {
+            self.ensure_supported_firmware()?;
+            self.set_scaled_float(
+                &Self::dynamics_address(target, $parameter)?,
+                value,
+                $minimum,
+                $maximum,
+                $logarithmic,
+                $name,
+            )
+        }
+    };
+}
+
+macro_rules! eq_bool_accessors {
+    ($get:ident, $set:ident, $parameter:literal) => {
+        fn $get(&mut self, target: EqTarget) -> io::Result<bool> {
+            self.ensure_supported_firmware()?;
+            self.get_bool_parameter(&Self::eq_address(target, $parameter)?)
+        }
+
+        fn $set(&mut self, target: EqTarget, value: bool) -> io::Result<()> {
+            self.ensure_supported_firmware()?;
+            self.set_bool_parameter(&Self::eq_address(target, $parameter)?, value)
+        }
+    };
+}
+
+macro_rules! eq_band_enum_accessors {
+    ($get:ident, $set:ident, $type:ty, $parameter:literal) => {
+        fn $get(&mut self, target: EqTarget, band: u8) -> io::Result<$type> {
+            self.ensure_supported_firmware()?;
+            self.get_enum(&Self::eq_band_address(target, band, $parameter)?)
+        }
+
+        fn $set(&mut self, target: EqTarget, band: u8, value: $type) -> io::Result<()> {
+            self.ensure_supported_firmware()?;
+            self.set_enum(&Self::eq_band_address(target, band, $parameter)?, value)
+        }
+    };
+}
+
+macro_rules! eq_band_float_accessors {
+    ($get:ident, $set:ident, $parameter:literal, $minimum:expr, $maximum:expr, $logarithmic:expr, $name:literal) => {
+        fn $get(&mut self, target: EqTarget, band: u8) -> io::Result<f32> {
+            self.ensure_supported_firmware()?;
+            self.get_scaled_float(
+                &Self::eq_band_address(target, band, $parameter)?,
+                $minimum,
+                $maximum,
+                $logarithmic,
+            )
+        }
+
+        fn $set(&mut self, target: EqTarget, band: u8, value: f32) -> io::Result<()> {
+            self.ensure_supported_firmware()?;
+            self.set_scaled_float(
+                &Self::eq_band_address(target, band, $parameter)?,
+                value,
+                $minimum,
+                $maximum,
+                $logarithmic,
+                $name,
+            )
+        }
+    };
+}
+
 impl Mixer for BehringerXAir {
     fn status(&mut self) -> io::Result<MixerStatus> {
         self.send_message("/status", None)?;
@@ -598,7 +1364,2100 @@ impl Mixer for BehringerXAir {
         let info = self.receive_mixer_info()?;
         self.model_config = XAirModelConfig::for_model(&info.model);
         self.model = Some(info.model.clone());
+        self.firmware_version = Some(info.firmware_version.clone());
         Ok(info)
+    }
+
+    fn subscribe_typed_meter_stream(
+        &mut self,
+        stream: MeterStreamId,
+    ) -> io::Result<Box<dyn TypedMeterStream>> {
+        self.ensure_supported_firmware()?;
+        Ok(Box::new(BehringerXAirTypedMeterStream {
+            stream: self.subscribe_meter_stream(stream)?,
+        }))
+    }
+
+    fn subscribe_parameter_updates(&mut self) -> io::Result<Box<dyn ParameterUpdateStream>> {
+        self.ensure_supported_firmware()?;
+        let peer_addr = self.socket.peer_addr()?;
+        let bind_addr = match peer_addr.ip() {
+            IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        };
+        let socket = UdpSocket::bind(bind_addr)?;
+        socket.connect(peer_addr)?;
+        socket.set_read_timeout(Some(RESPONSE_TIMEOUT))?;
+        send_parameter_subscription(&socket)?;
+        Ok(Box::new(BehringerXAirParameterUpdateStream {
+            socket,
+            last_subscription: Instant::now(),
+        }))
+    }
+
+    fn get_channel_input_source(&mut self, channel: u8) -> io::Result<InputSource> {
+        self.ensure_supported_firmware()?;
+        let address = Self::channel_address(channel, "config/insrc")?;
+        self.get_enum(&address)
+    }
+
+    fn set_channel_input_source(&mut self, channel: u8, source: InputSource) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let address = Self::channel_address(channel, "config/insrc")?;
+        self.set_enum(&address, source)
+    }
+
+    fn get_channel_usb_input_source(&mut self, channel: u8) -> io::Result<crate::UsbInputSource> {
+        self.ensure_model_family(&["XR18", "X18", "MR18"], "multichannel USB input routing")?;
+        self.get_enum(&Self::channel_address(channel, "config/rtnsrc")?)
+    }
+
+    fn set_channel_usb_input_source(
+        &mut self,
+        channel: u8,
+        source: crate::UsbInputSource,
+    ) -> io::Result<()> {
+        self.ensure_model_family(&["XR18", "X18", "MR18"], "multichannel USB input routing")?;
+        self.set_enum(&Self::channel_address(channel, "config/rtnsrc")?, source)
+    }
+
+    fn get_stereo_return_usb_source(
+        &mut self,
+        target: crate::StereoReturnTarget,
+    ) -> io::Result<crate::UsbStereoSource> {
+        self.ensure_model_family(&["XR18", "X18", "MR18"], "multichannel USB return routing")?;
+        let address = match target {
+            crate::StereoReturnTarget::Aux => "/rtn/aux/config/rtnsrc".to_string(),
+            crate::StereoReturnTarget::Fx(fx) if (1..=4).contains(&fx) => {
+                format!("/rtn/{fx}/config/rtnsrc")
+            }
+            crate::StereoReturnTarget::Fx(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "FX return must be between 1 and 4",
+                ));
+            }
+        };
+        self.get_enum(&address)
+    }
+
+    fn set_stereo_return_usb_source(
+        &mut self,
+        target: crate::StereoReturnTarget,
+        source: crate::UsbStereoSource,
+    ) -> io::Result<()> {
+        self.ensure_model_family(&["XR18", "X18", "MR18"], "multichannel USB return routing")?;
+        let address = match target {
+            crate::StereoReturnTarget::Aux => "/rtn/aux/config/rtnsrc".to_string(),
+            crate::StereoReturnTarget::Fx(fx) if (1..=4).contains(&fx) => {
+                format!("/rtn/{fx}/config/rtnsrc")
+            }
+            crate::StereoReturnTarget::Fx(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "FX return must be between 1 and 4",
+                ));
+            }
+        };
+        self.set_enum(&address, source)
+    }
+
+    fn get_channel_preamp_phantom(&mut self, channel: u8) -> io::Result<bool> {
+        self.ensure_channel_preamp(channel)?;
+        let address = format!("/headamp/{channel:02}/phantom");
+        self.get_bool_parameter(&address)
+    }
+
+    fn set_channel_preamp_phantom(&mut self, channel: u8, enabled: bool) -> io::Result<()> {
+        self.ensure_channel_preamp(channel)?;
+        let address = format!("/headamp/{channel:02}/phantom");
+        self.set_bool_parameter(&address, enabled)
+    }
+
+    fn get_channel_phase_inverted(&mut self, channel: u8) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        let address = Self::channel_address(channel, "preamp/invert")?;
+        self.get_bool_parameter(&address)
+    }
+
+    fn set_channel_phase_inverted(&mut self, channel: u8, inverted: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let address = Self::channel_address(channel, "preamp/invert")?;
+        self.set_bool_parameter(&address, inverted)
+    }
+
+    fn get_channel_high_pass_enabled(&mut self, channel: u8) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        let address = Self::channel_address(channel, "preamp/hpon")?;
+        self.get_bool_parameter(&address)
+    }
+
+    fn set_channel_high_pass_enabled(&mut self, channel: u8, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let address = Self::channel_address(channel, "preamp/hpon")?;
+        self.set_bool_parameter(&address, enabled)
+    }
+
+    fn get_channel_high_pass_frequency_hz(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        let address = Self::channel_address(channel, "preamp/hpf")?;
+        self.get_scaled_float(&address, 20.0, 400.0, true)
+    }
+
+    fn set_channel_high_pass_frequency_hz(
+        &mut self,
+        channel: u8,
+        frequency_hz: f32,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let address = Self::channel_address(channel, "preamp/hpf")?;
+        self.set_scaled_float(
+            &address,
+            frequency_hz,
+            20.0,
+            400.0,
+            true,
+            "high-pass frequency",
+        )
+    }
+
+    fn get_channel_eq_enabled(&mut self, channel: u8) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        let address = Self::channel_address(channel, "eq/on")?;
+        self.get_bool_parameter(&address)
+    }
+
+    fn set_channel_eq_enabled(&mut self, channel: u8, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let address = Self::channel_address(channel, "eq/on")?;
+        self.set_bool_parameter(&address, enabled)
+    }
+
+    fn get_channel_eq_band_type(&mut self, channel: u8, band: u8) -> io::Result<EqBandType> {
+        self.ensure_supported_firmware()?;
+        let address = Self::get_channel_eq_band_address(channel, band, "type")?;
+        self.get_enum(&address)
+    }
+
+    fn set_channel_eq_band_type(
+        &mut self,
+        channel: u8,
+        band: u8,
+        band_type: EqBandType,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let address = Self::get_channel_eq_band_address(channel, band, "type")?;
+        self.set_enum(&address, band_type)
+    }
+
+    fn get_channel_eq_band_frequency_hz(&mut self, channel: u8, band: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        let address = Self::get_channel_eq_band_address(channel, band, "f")?;
+        self.get_scaled_float(&address, 20.0, 20_000.0, true)
+    }
+
+    fn set_channel_eq_band_frequency_hz(
+        &mut self,
+        channel: u8,
+        band: u8,
+        frequency_hz: f32,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let address = Self::get_channel_eq_band_address(channel, band, "f")?;
+        self.set_scaled_float(&address, frequency_hz, 20.0, 20_000.0, true, "EQ frequency")
+    }
+
+    fn get_channel_eq_band_gain_db(&mut self, channel: u8, band: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        let address = Self::get_channel_eq_band_address(channel, band, "g")?;
+        self.get_scaled_float(&address, -15.0, 15.0, false)
+    }
+
+    fn set_channel_eq_band_gain_db(
+        &mut self,
+        channel: u8,
+        band: u8,
+        gain_db: f32,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let address = Self::get_channel_eq_band_address(channel, band, "g")?;
+        self.set_scaled_float(&address, gain_db, -15.0, 15.0, false, "EQ band gain")
+    }
+
+    fn get_channel_eq_band_q(&mut self, channel: u8, band: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        let address = Self::get_channel_eq_band_address(channel, band, "q")?;
+        self.get_reverse_log_float(&address, 0.3, 10.0)
+    }
+
+    fn set_channel_eq_band_q(&mut self, channel: u8, band: u8, q: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let address = Self::get_channel_eq_band_address(channel, band, "q")?;
+        self.set_reverse_log_float(&address, q, 0.3, 10.0, "EQ Q")
+    }
+
+    fn get_channel_gate_enabled(&mut self, channel: u8) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter(&Self::channel_address(channel, "gate/on")?)
+    }
+
+    fn set_channel_gate_enabled(&mut self, channel: u8, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter(&Self::channel_address(channel, "gate/on")?, enabled)
+    }
+
+    fn get_channel_gate_mode(&mut self, channel: u8) -> io::Result<GateMode> {
+        self.ensure_supported_firmware()?;
+        self.get_enum(&Self::channel_address(channel, "gate/mode")?)
+    }
+
+    fn set_channel_gate_mode(&mut self, channel: u8, mode: GateMode) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum(&Self::channel_address(channel, "gate/mode")?, mode)
+    }
+
+    fn get_channel_gate_threshold_db(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "gate/thr")?,
+            -80.0,
+            0.0,
+            false,
+        )
+    }
+
+    fn set_channel_gate_threshold_db(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "gate/thr")?,
+            value,
+            -80.0,
+            0.0,
+            false,
+            "gate threshold",
+        )
+    }
+
+    fn get_channel_gate_range_db(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "gate/range")?,
+            3.0,
+            60.0,
+            true,
+        )
+    }
+
+    fn set_channel_gate_range_db(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "gate/range")?,
+            value,
+            3.0,
+            60.0,
+            true,
+            "gate range",
+        )
+    }
+
+    fn get_channel_gate_attack_ms(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "gate/attack")?,
+            0.0,
+            120.0,
+            false,
+        )
+    }
+
+    fn set_channel_gate_attack_ms(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "gate/attack")?,
+            value,
+            0.0,
+            120.0,
+            false,
+            "gate attack",
+        )
+    }
+
+    fn get_channel_gate_hold_ms(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "gate/hold")?,
+            0.02,
+            2000.0,
+            true,
+        )
+    }
+
+    fn set_channel_gate_hold_ms(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "gate/hold")?,
+            value,
+            0.02,
+            2000.0,
+            true,
+            "gate hold",
+        )
+    }
+
+    fn get_channel_gate_release_ms(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "gate/release")?,
+            5.0,
+            4000.0,
+            true,
+        )
+    }
+
+    fn set_channel_gate_release_ms(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "gate/release")?,
+            value,
+            5.0,
+            4000.0,
+            true,
+            "gate release",
+        )
+    }
+
+    fn get_channel_gate_key_source(&mut self, channel: u8) -> io::Result<DynamicsKeySource> {
+        self.ensure_supported_firmware()?;
+        self.get_enum(&Self::channel_address(channel, "gate/keysrc")?)
+    }
+
+    fn set_channel_gate_key_source(
+        &mut self,
+        channel: u8,
+        source: DynamicsKeySource,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum(&Self::channel_address(channel, "gate/keysrc")?, source)
+    }
+
+    fn get_channel_gate_filter_enabled(&mut self, channel: u8) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter(&Self::channel_address(channel, "gate/filter/on")?)
+    }
+
+    fn set_channel_gate_filter_enabled(&mut self, channel: u8, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter(&Self::channel_address(channel, "gate/filter/on")?, enabled)
+    }
+
+    fn get_channel_gate_filter_type(&mut self, channel: u8) -> io::Result<DynamicsFilterType> {
+        self.ensure_supported_firmware()?;
+        self.get_enum(&Self::channel_address(channel, "gate/filter/type")?)
+    }
+
+    fn set_channel_gate_filter_type(
+        &mut self,
+        channel: u8,
+        filter_type: DynamicsFilterType,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum(
+            &Self::channel_address(channel, "gate/filter/type")?,
+            filter_type,
+        )
+    }
+
+    fn get_channel_gate_filter_frequency_hz(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "gate/filter/f")?,
+            20.0,
+            20_000.0,
+            true,
+        )
+    }
+
+    fn set_channel_gate_filter_frequency_hz(
+        &mut self,
+        channel: u8,
+        frequency_hz: f32,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "gate/filter/f")?,
+            frequency_hz,
+            20.0,
+            20_000.0,
+            true,
+            "gate filter frequency",
+        )
+    }
+
+    fn get_channel_dynamics_enabled(&mut self, channel: u8) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter(&Self::channel_address(channel, "dyn/on")?)
+    }
+
+    fn set_channel_dynamics_enabled(&mut self, channel: u8, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter(&Self::channel_address(channel, "dyn/on")?, enabled)
+    }
+
+    fn get_channel_dynamics_mode(&mut self, channel: u8) -> io::Result<DynamicsMode> {
+        self.ensure_supported_firmware()?;
+        self.get_enum(&Self::channel_address(channel, "dyn/mode")?)
+    }
+
+    fn set_channel_dynamics_mode(&mut self, channel: u8, mode: DynamicsMode) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum(&Self::channel_address(channel, "dyn/mode")?, mode)
+    }
+
+    fn get_channel_dynamics_detector(&mut self, channel: u8) -> io::Result<DynamicsDetector> {
+        self.ensure_supported_firmware()?;
+        self.get_enum(&Self::channel_address(channel, "dyn/det")?)
+    }
+
+    fn set_channel_dynamics_detector(
+        &mut self,
+        channel: u8,
+        detector: DynamicsDetector,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum(&Self::channel_address(channel, "dyn/det")?, detector)
+    }
+
+    fn get_channel_dynamics_envelope(&mut self, channel: u8) -> io::Result<DynamicsEnvelope> {
+        self.ensure_supported_firmware()?;
+        self.get_enum(&Self::channel_address(channel, "dyn/env")?)
+    }
+
+    fn set_channel_dynamics_envelope(
+        &mut self,
+        channel: u8,
+        envelope: DynamicsEnvelope,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum(&Self::channel_address(channel, "dyn/env")?, envelope)
+    }
+
+    fn get_channel_dynamics_threshold_db(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "dyn/thr")?,
+            -60.0,
+            0.0,
+            false,
+        )
+    }
+
+    fn set_channel_dynamics_threshold_db(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "dyn/thr")?,
+            value,
+            -60.0,
+            0.0,
+            false,
+            "dynamics threshold",
+        )
+    }
+
+    fn get_channel_dynamics_ratio(&mut self, channel: u8) -> io::Result<DynamicsRatio> {
+        self.ensure_supported_firmware()?;
+        self.get_enum(&Self::channel_address(channel, "dyn/ratio")?)
+    }
+
+    fn set_channel_dynamics_ratio(&mut self, channel: u8, ratio: DynamicsRatio) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum(&Self::channel_address(channel, "dyn/ratio")?, ratio)
+    }
+
+    fn get_channel_dynamics_knee_db(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "dyn/knee")?,
+            0.0,
+            5.0,
+            false,
+        )
+    }
+
+    fn set_channel_dynamics_knee_db(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "dyn/knee")?,
+            value,
+            0.0,
+            5.0,
+            false,
+            "dynamics knee",
+        )
+    }
+
+    fn get_channel_dynamics_makeup_gain_db(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "dyn/mgain")?,
+            0.0,
+            24.0,
+            false,
+        )
+    }
+
+    fn set_channel_dynamics_makeup_gain_db(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "dyn/mgain")?,
+            value,
+            0.0,
+            24.0,
+            false,
+            "dynamics makeup gain",
+        )
+    }
+
+    fn get_channel_dynamics_attack_ms(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "dyn/attack")?,
+            0.0,
+            120.0,
+            false,
+        )
+    }
+
+    fn set_channel_dynamics_attack_ms(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "dyn/attack")?,
+            value,
+            0.0,
+            120.0,
+            false,
+            "dynamics attack",
+        )
+    }
+
+    fn get_channel_dynamics_hold_ms(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "dyn/hold")?,
+            0.02,
+            2000.0,
+            true,
+        )
+    }
+
+    fn set_channel_dynamics_hold_ms(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "dyn/hold")?,
+            value,
+            0.02,
+            2000.0,
+            true,
+            "dynamics hold",
+        )
+    }
+
+    fn get_channel_dynamics_release_ms(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "dyn/release")?,
+            5.0,
+            4000.0,
+            true,
+        )
+    }
+
+    fn set_channel_dynamics_release_ms(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "dyn/release")?,
+            value,
+            5.0,
+            4000.0,
+            true,
+            "dynamics release",
+        )
+    }
+
+    fn get_channel_dynamics_mix_percent(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "dyn/mix")?,
+            0.0,
+            100.0,
+            false,
+        )
+    }
+
+    fn set_channel_dynamics_mix_percent(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "dyn/mix")?,
+            value,
+            0.0,
+            100.0,
+            false,
+            "dynamics mix",
+        )
+    }
+
+    fn get_channel_dynamics_key_source(&mut self, channel: u8) -> io::Result<DynamicsKeySource> {
+        self.ensure_supported_firmware()?;
+        self.get_enum(&Self::channel_address(channel, "dyn/keysrc")?)
+    }
+
+    fn set_channel_dynamics_key_source(
+        &mut self,
+        channel: u8,
+        source: DynamicsKeySource,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum(&Self::channel_address(channel, "dyn/keysrc")?, source)
+    }
+
+    fn get_channel_dynamics_auto(&mut self, channel: u8) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter(&Self::channel_address(channel, "dyn/auto")?)
+    }
+
+    fn set_channel_dynamics_auto(&mut self, channel: u8, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter(&Self::channel_address(channel, "dyn/auto")?, enabled)
+    }
+
+    fn get_channel_dynamics_filter_enabled(&mut self, channel: u8) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter(&Self::channel_address(channel, "dyn/filter/on")?)
+    }
+
+    fn set_channel_dynamics_filter_enabled(
+        &mut self,
+        channel: u8,
+        enabled: bool,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter(&Self::channel_address(channel, "dyn/filter/on")?, enabled)
+    }
+
+    fn get_channel_dynamics_filter_type(&mut self, channel: u8) -> io::Result<DynamicsFilterType> {
+        self.ensure_supported_firmware()?;
+        self.get_enum(&Self::channel_address(channel, "dyn/filter/type")?)
+    }
+
+    fn set_channel_dynamics_filter_type(
+        &mut self,
+        channel: u8,
+        filter_type: DynamicsFilterType,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum(
+            &Self::channel_address(channel, "dyn/filter/type")?,
+            filter_type,
+        )
+    }
+
+    fn get_channel_dynamics_filter_frequency_hz(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "dyn/filter/f")?,
+            20.0,
+            20_000.0,
+            true,
+        )
+    }
+
+    fn set_channel_dynamics_filter_frequency_hz(
+        &mut self,
+        channel: u8,
+        frequency_hz: f32,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "dyn/filter/f")?,
+            frequency_hz,
+            20.0,
+            20_000.0,
+            true,
+            "dynamics filter frequency",
+        )
+    }
+
+    fn get_channel_automix_group(&mut self, channel: u8) -> io::Result<AutomixGroup> {
+        self.ensure_supported_firmware()?;
+        self.get_enum(&Self::channel_address(channel, "automix/group")?)
+    }
+
+    fn set_channel_automix_group(&mut self, channel: u8, group: AutomixGroup) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum(&Self::channel_address(channel, "automix/group")?, group)
+    }
+
+    fn get_channel_automix_weight_db(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::channel_address(channel, "automix/weight")?,
+            -24.0,
+            24.0,
+            false,
+        )
+    }
+
+    fn set_channel_automix_weight_db(&mut self, channel: u8, weight_db: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::channel_address(channel, "automix/weight")?,
+            weight_db,
+            -24.0,
+            24.0,
+            false,
+            "automix weight",
+        )
+    }
+
+    fn get_automix_enabled(&mut self, group: AutomixGroup) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        let name = automix_group_name(group)?;
+        self.get_bool_parameter(&format!("/config/amixenable/{name}"))
+    }
+
+    fn set_automix_enabled(&mut self, group: AutomixGroup, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let name = automix_group_name(group)?;
+        self.set_bool_parameter(&format!("/config/amixenable/{name}"), enabled)
+    }
+
+    fn get_automix_locked(&mut self, group: AutomixGroup) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        let name = automix_group_name(group)?;
+        self.get_bool_parameter(&format!("/config/amixlock/{name}"))
+    }
+
+    fn set_automix_locked(&mut self, group: AutomixGroup, locked: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let name = automix_group_name(group)?;
+        self.set_bool_parameter(&format!("/config/amixlock/{name}"), locked)
+    }
+
+    fn get_fx_engine_type(&mut self, fx: u8) -> io::Result<FxType> {
+        self.ensure_supported_firmware()?;
+        self.get_enum(&fx_parameter_address(fx, "type")?)
+    }
+
+    fn set_fx_engine_type(&mut self, fx: u8, fx_type: FxType) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum(&fx_parameter_address(fx, "type")?, fx_type)
+    }
+
+    fn get_fx_engine_insert_enabled(&mut self, fx: u8) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter(&fx_parameter_address(fx, "insert")?)
+    }
+
+    fn set_fx_engine_insert_enabled(&mut self, fx: u8, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter(&fx_parameter_address(fx, "insert")?, enabled)
+    }
+
+    fn get_fx_engine_parameter(&mut self, fx: u8, parameter: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_parameter_float(&fx_parameter_address(fx, &format!("par/{parameter:02}"))?)
+    }
+
+    fn set_fx_engine_parameter(&mut self, fx: u8, parameter: u8, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_parameter_float(
+            &fx_parameter_address(fx, &format!("par/{parameter:02}"))?,
+            value,
+        )
+    }
+
+    fn get_routing_source(&mut self, output: RoutingOutput) -> io::Result<RoutingSource> {
+        self.ensure_routing_output(output)?;
+        if !routing_output_has_source(output) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this output has no routing source parameter",
+            ));
+        }
+        let address = Self::routing_source_address(output, "src");
+        let source = self.get_enum::<RoutingSource>(&address)?;
+        if is_usb_routing_output(output) && i32::from(source) > 37 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "USB routing source contained a value outside its catalog range",
+            ));
+        }
+        Ok(source)
+    }
+
+    fn set_routing_source(
+        &mut self,
+        output: RoutingOutput,
+        source: RoutingSource,
+    ) -> io::Result<()> {
+        self.ensure_routing_output(output)?;
+        if !routing_output_has_source(output) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this output has no routing source parameter",
+            ));
+        }
+        if is_usb_routing_output(output) && i32::from(source) > 37 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "USB routing sources must be between channel 1 and main right",
+            ));
+        }
+        self.set_enum(&Self::routing_source_address(output, "src"), source)
+    }
+
+    fn get_main_output_source(&mut self, output: RoutingOutput) -> io::Result<MainOutputSource> {
+        self.ensure_routing_output(output)?;
+        if !matches!(output, RoutingOutput::MainLeft | RoutingOutput::Headphones) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "main output source applies to the main left/right or headphone output",
+            ));
+        }
+        let source =
+            self.get_enum::<MainOutputSource>(&Self::routing_source_address(output, "src"))?;
+        if i32::from(source) > 2 {
+            self.ensure_model_family(&["XR18", "X18", "MR18"], "multitrack USB output routing")?;
+        }
+        Ok(source)
+    }
+
+    fn set_main_output_source(
+        &mut self,
+        output: RoutingOutput,
+        source: MainOutputSource,
+    ) -> io::Result<()> {
+        self.ensure_routing_output(output)?;
+        if !matches!(output, RoutingOutput::MainLeft | RoutingOutput::Headphones) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "main output source applies to the main left/right or headphone output",
+            ));
+        }
+        if i32::from(source) > 2 {
+            self.ensure_model_family(&["XR18", "X18", "MR18"], "multitrack USB output routing")?;
+        }
+        self.set_enum(&Self::routing_source_address(output, "src"), source)
+    }
+
+    fn get_routing_position(&mut self, output: RoutingOutput) -> io::Result<OutputPosition> {
+        self.ensure_routing_output(output)?;
+        if !routing_output_has_source(output) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this output has no source position parameter",
+            ));
+        }
+        self.get_enum(&Self::routing_source_address(output, "pos"))
+    }
+
+    fn set_routing_position(
+        &mut self,
+        output: RoutingOutput,
+        position: OutputPosition,
+    ) -> io::Result<()> {
+        self.ensure_routing_output(output)?;
+        if !routing_output_has_source(output) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this output has no source position parameter",
+            ));
+        }
+        self.set_enum(&Self::routing_source_address(output, "pos"), position)
+    }
+
+    fn get_recorder_state(&mut self) -> io::Result<RecorderState> {
+        self.ensure_usb_recorder()?;
+        self.get_enum("/-stat/tape/state")
+    }
+
+    fn set_recorder_state(&mut self, state: RecorderState) -> io::Result<()> {
+        self.ensure_usb_recorder()?;
+        self.set_enum("/-stat/tape/state", state)
+    }
+
+    fn get_recorder_file(&mut self) -> io::Result<String> {
+        self.ensure_usb_recorder()?;
+        self.get_parameter_string("/-stat/tape/file")
+    }
+
+    fn set_recorder_file(&mut self, file: &str) -> io::Result<()> {
+        self.ensure_usb_recorder()?;
+        validate_catalog_string(file, 256, "recorder file")?;
+        self.send_string_message("/-stat/tape/file", file)
+    }
+
+    fn get_recorder_elapsed_seconds(&mut self) -> io::Result<u32> {
+        self.ensure_usb_recorder()?;
+        let value = self.get_parameter_int("/-stat/tape/etime")?;
+        if !(0..=35999).contains(&value) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recorder elapsed time was outside the catalog range",
+            ));
+        }
+        Ok(value as u32)
+    }
+
+    fn get_recorder_remaining_seconds(&mut self) -> io::Result<i32> {
+        self.ensure_usb_recorder()?;
+        let value = self.get_parameter_int("/-stat/tape/rtime")?;
+        if !(-1000..=35999).contains(&value) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recorder remaining time was outside the catalog range",
+            ));
+        }
+        Ok(value)
+    }
+
+    fn get_recorder_usb_path(&mut self) -> io::Result<String> {
+        self.ensure_usb_recorder()?;
+        self.get_parameter_string("/-stat/usb/path")
+    }
+
+    fn set_recorder_usb_path(&mut self, path: &str) -> io::Result<()> {
+        self.ensure_usb_recorder()?;
+        validate_catalog_string(path, 256, "USB recorder path")?;
+        self.send_string_message("/-stat/usb/path", path)
+    }
+
+    fn get_recorder_usb_entry_count(&mut self) -> io::Result<u8> {
+        self.ensure_usb_recorder()?;
+        let count = self.get_parameter_int("/-stat/usb/count")?;
+        if !(0..=200).contains(&count) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "USB recorder entry count was outside the catalog range",
+            ));
+        }
+        Ok(count as u8)
+    }
+
+    fn get_recorder_usb_entry_name(&mut self, entry: u16) -> io::Result<String> {
+        self.ensure_usb_recorder()?;
+        validate_recorder_entry(entry)?;
+        self.get_parameter_string(&format!("/-stat/usb/{entry:03}/name"))
+    }
+
+    fn get_recorder_usb_entry_is_directory(&mut self, entry: u16) -> io::Result<bool> {
+        self.ensure_usb_recorder()?;
+        validate_recorder_entry(entry)?;
+        Ok(self.get_parameter_int(&format!("/-stat/usb/{entry:03}/type"))? == 1)
+    }
+
+    fn get_network_mode(&mut self) -> io::Result<NetworkMode> {
+        self.ensure_supported_firmware()?;
+        self.get_enum("/-stat/netmode")
+    }
+
+    fn set_network_mode(&mut self, mode: NetworkMode) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.send_int_message("/-action/updnet", Some(i32::from(mode) + 1))
+    }
+
+    fn get_strip_label(&mut self, target: crate::StripTarget) -> io::Result<String> {
+        self.ensure_supported_firmware()?;
+        self.get_parameter_string(&Self::strip_parameter_address(target, "name")?)
+    }
+
+    fn set_strip_label(&mut self, target: crate::StripTarget, label: &str) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        validate_catalog_string(label, 16, "strip label")?;
+        self.send_string_message(&Self::strip_parameter_address(target, "name")?, label)
+    }
+
+    fn get_strip_color(&mut self, target: crate::StripTarget) -> io::Result<crate::MixerColor> {
+        self.ensure_supported_firmware()?;
+        self.get_enum(&Self::strip_parameter_address(target, "color")?)
+    }
+
+    fn set_strip_color(
+        &mut self,
+        target: crate::StripTarget,
+        color: crate::MixerColor,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum(&Self::strip_parameter_address(target, "color")?, color)
+    }
+
+    fn get_strip_fader(&mut self, target: crate::StripTarget) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_parameter_float(&Self::strip_mix_address(target, "fader")?)
+    }
+
+    fn set_strip_fader(&mut self, target: crate::StripTarget, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_parameter_float(&Self::strip_mix_address(target, "fader")?, value)
+    }
+
+    fn get_strip_mute(&mut self, target: crate::StripTarget) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        Ok(!self.get_bool_parameter(&Self::strip_mix_address(target, "on")?)?)
+    }
+
+    fn set_strip_mute(&mut self, target: crate::StripTarget, muted: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter(&Self::strip_mix_address(target, "on")?, !muted)
+    }
+
+    fn get_strip_solo(&mut self, target: crate::StripTarget) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter(&Self::strip_solo_address(target)?)
+    }
+
+    fn set_strip_solo(&mut self, target: crate::StripTarget, solo: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter(&Self::strip_solo_address(target)?, solo)
+    }
+
+    fn get_strip_pan(&mut self, target: crate::StripTarget) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        if matches!(
+            target,
+            crate::StripTarget::Dca(_) | crate::StripTarget::FxSend(_)
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this strip has no pan parameter",
+            ));
+        }
+        self.get_parameter_float(&Self::strip_mix_address(target, "pan")?)
+    }
+
+    fn set_strip_pan(&mut self, target: crate::StripTarget, pan: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        if matches!(
+            target,
+            crate::StripTarget::Dca(_) | crate::StripTarget::FxSend(_)
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this strip has no pan parameter",
+            ));
+        }
+        self.set_parameter_float(&Self::strip_mix_address(target, "pan")?, pan)
+    }
+
+    fn get_strip_lr_enabled(&mut self, target: crate::StripTarget) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        if matches!(
+            target,
+            crate::StripTarget::FxSend(_) | crate::StripTarget::Main | crate::StripTarget::Dca(_)
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this strip has no Main LR assignment parameter",
+            ));
+        }
+        self.get_bool_parameter(&Self::strip_mix_address(target, "lr")?)
+    }
+
+    fn set_strip_lr_enabled(
+        &mut self,
+        target: crate::StripTarget,
+        enabled: bool,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        if matches!(
+            target,
+            crate::StripTarget::FxSend(_) | crate::StripTarget::Main | crate::StripTarget::Dca(_)
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this strip has no Main LR assignment parameter",
+            ));
+        }
+        self.set_bool_parameter(&Self::strip_mix_address(target, "lr")?, enabled)
+    }
+
+    fn get_strip_dca_group(&mut self, target: crate::StripTarget, dca: u8) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        validate_group_number(dca, "DCA")?;
+        let address = Self::strip_group_address(target, "dca")?;
+        self.get_group_bit(&address, dca)
+    }
+
+    fn set_strip_dca_group(
+        &mut self,
+        target: crate::StripTarget,
+        dca: u8,
+        assigned: bool,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        validate_group_number(dca, "DCA")?;
+        let address = Self::strip_group_address(target, "dca")?;
+        self.set_group_bit(&address, dca, assigned)
+    }
+
+    fn get_strip_mute_group(&mut self, target: crate::StripTarget, group: u8) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        validate_group_number(group, "mute group")?;
+        let address = Self::strip_group_address(target, "mute")?;
+        self.get_group_bit(&address, group)
+    }
+
+    fn set_strip_mute_group(
+        &mut self,
+        target: crate::StripTarget,
+        group: u8,
+        assigned: bool,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        validate_group_number(group, "mute group")?;
+        let address = Self::strip_group_address(target, "mute")?;
+        self.set_group_bit(&address, group, assigned)
+    }
+
+    fn get_channel_link_enabled(&mut self, odd_channel: u8) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        validate_link_pair(odd_channel, 15, "channel")?;
+        self.get_bool_parameter(&format!("/config/chlink/{odd_channel}-{}", odd_channel + 1))
+    }
+
+    fn set_channel_link_enabled(&mut self, odd_channel: u8, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        validate_link_pair(odd_channel, 15, "channel")?;
+        self.set_bool_parameter(
+            &format!("/config/chlink/{odd_channel}-{}", odd_channel + 1),
+            enabled,
+        )
+    }
+
+    fn get_bus_link_enabled(&mut self, odd_bus: u8) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        validate_link_pair(odd_bus, 5, "bus")?;
+        self.get_bool_parameter(&format!("/config/buslink/{odd_bus}-{}", odd_bus + 1))
+    }
+
+    fn set_bus_link_enabled(&mut self, odd_bus: u8, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        validate_link_pair(odd_bus, 5, "bus")?;
+        self.set_bool_parameter(
+            &format!("/config/buslink/{odd_bus}-{}", odd_bus + 1),
+            enabled,
+        )
+    }
+
+    fn get_link_preamp_enabled(&mut self) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter("/config/linkcfg/preamp")
+    }
+
+    fn set_link_preamp_enabled(&mut self, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter("/config/linkcfg/preamp", enabled)
+    }
+
+    fn get_link_eq_enabled(&mut self) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter("/config/linkcfg/eq")
+    }
+
+    fn set_link_eq_enabled(&mut self, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter("/config/linkcfg/eq", enabled)
+    }
+
+    fn get_link_dynamics_enabled(&mut self) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter("/config/linkcfg/dyn")
+    }
+
+    fn set_link_dynamics_enabled(&mut self, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter("/config/linkcfg/dyn", enabled)
+    }
+
+    fn get_link_fader_mute_enabled(&mut self) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter("/config/linkcfg/fdrmute")
+    }
+
+    fn set_link_fader_mute_enabled(&mut self, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter("/config/linkcfg/fdrmute", enabled)
+    }
+
+    fn get_lan_mode(&mut self) -> io::Result<LanMode> {
+        self.ensure_supported_firmware()?;
+        self.get_enum("/-prefs/lan/mode")
+    }
+
+    fn set_lan_mode(&mut self, mode: LanMode) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum("/-prefs/lan/mode", mode)
+    }
+
+    fn get_lan_address(&mut self) -> io::Result<std::net::Ipv4Addr> {
+        self.ensure_supported_firmware()?;
+        self.get_ipv4_preference("/-prefs/lan/addr")
+    }
+
+    fn set_lan_address(&mut self, address: std::net::Ipv4Addr) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_ipv4_preference("/-prefs/lan/addr", address)
+    }
+
+    fn get_lan_netmask(&mut self) -> io::Result<std::net::Ipv4Addr> {
+        self.ensure_supported_firmware()?;
+        self.get_ipv4_preference("/-prefs/lan/mask")
+    }
+
+    fn set_lan_netmask(&mut self, netmask: std::net::Ipv4Addr) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_ipv4_preference("/-prefs/lan/mask", netmask)
+    }
+
+    fn get_lan_gateway(&mut self) -> io::Result<std::net::Ipv4Addr> {
+        self.ensure_supported_firmware()?;
+        self.get_ipv4_preference("/-prefs/lan/gateway")
+    }
+
+    fn set_lan_gateway(&mut self, gateway: std::net::Ipv4Addr) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_ipv4_preference("/-prefs/lan/gateway", gateway)
+    }
+
+    fn get_access_point_security(&mut self) -> io::Result<crate::AccessPointSecurity> {
+        self.ensure_supported_firmware()?;
+        self.get_enum("/-prefs/ap/security")
+    }
+
+    fn set_access_point_security(
+        &mut self,
+        security: crate::AccessPointSecurity,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum("/-prefs/ap/security", security)
+    }
+
+    fn get_access_point_ssid(&mut self) -> io::Result<String> {
+        self.ensure_supported_firmware()?;
+        self.get_network_string("/-prefs/ap/ssid")
+    }
+
+    fn set_access_point_ssid(&mut self, ssid: &str) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_network_string("/-prefs/ap/ssid", ssid, 32, "access point SSID")
+    }
+
+    fn get_access_point_key(&mut self) -> io::Result<String> {
+        self.ensure_supported_firmware()?;
+        self.get_network_string("/-prefs/ap/key")
+    }
+
+    fn set_access_point_key(&mut self, key: &str) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        if !key.is_empty() && key.len() != 5 && key.len() != 13 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "access point WEP key must contain 5 or 13 bytes",
+            ));
+        }
+        self.set_network_string("/-prefs/ap/key", key, 13, "access point key")
+    }
+
+    fn get_access_point_channel(&mut self) -> io::Result<u8> {
+        self.ensure_supported_firmware()?;
+        let value = self.get_parameter_int("/-prefs/ap/channel")?;
+        u8::try_from(value)
+            .ok()
+            .filter(|channel| (1..=11).contains(channel))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "access point channel was outside 1..11",
+                )
+            })
+    }
+
+    fn set_access_point_channel(&mut self, channel: u8) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        if !(1..=11).contains(&channel) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "access point channel must be between 1 and 11",
+            ));
+        }
+        self.set_parameter_int("/-prefs/ap/channel", i32::from(channel))
+    }
+
+    fn get_infrastructure_security(&mut self) -> io::Result<WifiSecurity> {
+        self.ensure_supported_firmware()?;
+        self.get_enum("/-prefs/is/security")
+    }
+
+    fn set_infrastructure_security(&mut self, security: WifiSecurity) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum("/-prefs/is/security", security)
+    }
+
+    fn get_infrastructure_ssid(&mut self) -> io::Result<String> {
+        self.ensure_supported_firmware()?;
+        self.get_network_string("/-prefs/is/ssid")
+    }
+
+    fn set_infrastructure_ssid(&mut self, ssid: &str) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_network_string("/-prefs/is/ssid", ssid, 32, "infrastructure SSID")
+    }
+
+    fn get_infrastructure_key(&mut self) -> io::Result<String> {
+        self.ensure_supported_firmware()?;
+        self.get_network_string("/-prefs/is/key")
+    }
+
+    fn set_infrastructure_key(&mut self, key: &str) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_network_string("/-prefs/is/key", key, 64, "infrastructure key")
+    }
+
+    fn get_infrastructure_mode(&mut self) -> io::Result<InfrastructureMode> {
+        self.ensure_supported_firmware()?;
+        self.get_enum("/-prefs/is/mode")
+    }
+
+    fn set_infrastructure_mode(&mut self, mode: InfrastructureMode) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum("/-prefs/is/mode", mode)
+    }
+
+    fn get_infrastructure_address(&mut self) -> io::Result<std::net::Ipv4Addr> {
+        self.ensure_supported_firmware()?;
+        self.get_ipv4_preference("/-prefs/is/addr")
+    }
+
+    fn set_infrastructure_address(&mut self, address: std::net::Ipv4Addr) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_ipv4_preference("/-prefs/is/addr", address)
+    }
+
+    fn get_infrastructure_netmask(&mut self) -> io::Result<std::net::Ipv4Addr> {
+        self.ensure_supported_firmware()?;
+        self.get_ipv4_preference("/-prefs/is/mask")
+    }
+
+    fn set_infrastructure_netmask(&mut self, netmask: std::net::Ipv4Addr) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_ipv4_preference("/-prefs/is/mask", netmask)
+    }
+
+    fn get_infrastructure_gateway(&mut self) -> io::Result<std::net::Ipv4Addr> {
+        self.ensure_supported_firmware()?;
+        self.get_ipv4_preference("/-prefs/is/gateway")
+    }
+
+    fn set_infrastructure_gateway(&mut self, gateway: std::net::Ipv4Addr) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_ipv4_preference("/-prefs/is/gateway", gateway)
+    }
+
+    fn get_network_candidate(&mut self, entry: u8) -> io::Result<crate::NetworkCandidate> {
+        self.ensure_supported_firmware()?;
+        if !(1..=10).contains(&entry) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "network entry must be between 1 and 10",
+            ));
+        }
+        let base = format!("/-stat/networks/{entry:02}");
+        let ssid = self.get_parameter_string(&format!("{base}/ssid"))?;
+        let strength = self.get_parameter_int(&format!("{base}/strength"))?;
+        let flags = self.get_parameter_int(&format!("{base}/flags"))?;
+        if !(0..=100).contains(&strength) || !(0..=7).contains(&flags) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Wi-Fi scan result was outside its catalog range",
+            ));
+        }
+        Ok(crate::NetworkCandidate {
+            ssid,
+            strength_percent: strength as u8,
+            encrypted: flags & 1 != 0,
+            supports_wpa: flags & 2 != 0,
+            supports_wpa2: flags & 4 != 0,
+        })
+    }
+
+    fn scan_wifi_networks(&mut self) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        if self.get_network_mode()? != NetworkMode::Lan {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Wi-Fi scan is available only in LAN network mode",
+            ));
+        }
+        self.send_int_message("/-action/wlanscan", Some(1))
+    }
+
+    fn get_usb_recorder_mounted(&mut self) -> io::Result<bool> {
+        self.ensure_usb_recorder()?;
+        self.get_bool_parameter("/-stat/usbmounted")
+    }
+
+    fn get_channel_lr_enabled(&mut self, channel: u8) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter(&Self::channel_address(channel, "mix/lr")?)
+    }
+
+    fn set_channel_lr_enabled(&mut self, channel: u8, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter(&Self::channel_address(channel, "mix/lr")?, enabled)
+    }
+
+    fn get_return_trim_db(&mut self, target: ReturnTarget) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::return_address(target, "preamp/rtntrim")?,
+            -18.0,
+            18.0,
+            false,
+        )
+    }
+
+    fn set_return_trim_db(&mut self, target: ReturnTarget, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::return_address(target, "preamp/rtntrim")?,
+            value,
+            -18.0,
+            18.0,
+            false,
+            "return trim",
+        )
+    }
+
+    fn get_return_source_enabled(&mut self, target: ReturnTarget) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter(&Self::return_address(target, "preamp/rtnsw")?)
+    }
+
+    fn set_return_source_enabled(&mut self, target: ReturnTarget, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter(&Self::return_address(target, "preamp/rtnsw")?, enabled)
+    }
+
+    fn get_processing_insert_enabled(&mut self, target: DynamicsTarget) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter(&Self::insert_address(target, "on")?)
+    }
+
+    fn set_processing_insert_enabled(
+        &mut self,
+        target: DynamicsTarget,
+        enabled: bool,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter(&Self::insert_address(target, "on")?, enabled)
+    }
+
+    fn get_processing_insert_fx_slot(
+        &mut self,
+        target: DynamicsTarget,
+    ) -> io::Result<InsertFxSlot> {
+        self.ensure_supported_firmware()?;
+        let slot: InsertFxSlot = self.get_enum(&Self::insert_address(target, "fxslot")?)?;
+        if matches!(target, DynamicsTarget::Main) && i32::from(slot) > 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Main LR insert slot was outside its catalog range",
+            ));
+        }
+        Ok(slot)
+    }
+
+    fn set_processing_insert_fx_slot(
+        &mut self,
+        target: DynamicsTarget,
+        slot: InsertFxSlot,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        if matches!(target, DynamicsTarget::Main) && i32::from(slot) > 4 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Main LR insert slot must be OFF or FX1 through FX4",
+            ));
+        }
+        self.set_enum(&Self::insert_address(target, "fxslot")?, slot)
+    }
+
+    fn get_mixer_send_group_enabled(
+        &mut self,
+        source: MixerSendSource,
+        destination: MixerSendDestination,
+    ) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        let address = format!(
+            "{}/grpon",
+            Self::mixer_send_base_address(source, destination)?
+        );
+        self.get_bool_parameter(&address)
+    }
+
+    fn set_mixer_send_group_enabled(
+        &mut self,
+        source: MixerSendSource,
+        destination: MixerSendDestination,
+        enabled: bool,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let address = format!(
+            "{}/grpon",
+            Self::mixer_send_base_address(source, destination)?
+        );
+        self.set_bool_parameter(&address, enabled)
+    }
+
+    fn get_mixer_send_tap(
+        &mut self,
+        source: MixerSendSource,
+        destination: MixerSendDestination,
+    ) -> io::Result<SendTap> {
+        self.ensure_supported_firmware()?;
+        let address = format!(
+            "{}/tap",
+            Self::mixer_send_base_address(source, destination)?
+        );
+        self.get_enum(&address)
+    }
+
+    fn set_mixer_send_tap(
+        &mut self,
+        source: MixerSendSource,
+        destination: MixerSendDestination,
+        tap: SendTap,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let address = format!(
+            "{}/tap",
+            Self::mixer_send_base_address(source, destination)?
+        );
+        self.set_enum(&address, tap)
+    }
+
+    fn get_mixer_send_pan(
+        &mut self,
+        source: MixerSendSource,
+        destination: MixerSendDestination,
+    ) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        let MixerSendDestination::Bus(bus) = destination else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "send pan is available only on odd-numbered bus sends",
+            ));
+        };
+        if ![1, 3, 5].contains(&bus) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "send pan is available only on bus sends 1, 3, and 5",
+            ));
+        }
+        let address = format!(
+            "{}/pan",
+            Self::mixer_send_base_address(source, MixerSendDestination::Bus(bus))?
+        );
+        self.get_parameter_float(&address)
+    }
+
+    fn set_mixer_send_pan(
+        &mut self,
+        source: MixerSendSource,
+        destination: MixerSendDestination,
+        pan: f32,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        let MixerSendDestination::Bus(bus) = destination else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "send pan is available only on odd-numbered bus sends",
+            ));
+        };
+        if ![1, 3, 5].contains(&bus) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "send pan is available only on bus sends 1, 3, and 5",
+            ));
+        }
+        if !pan.is_finite() || !(0.0..=1.0).contains(&pan) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR send pan must be finite and between 0.0 and 1.0",
+            ));
+        }
+        let address = format!(
+            "{}/pan",
+            Self::mixer_send_base_address(source, MixerSendDestination::Bus(bus))?
+        );
+        self.send_message(&address, Some(pan))
+    }
+
+    dynamics_bool_accessors!(get_dynamics_enabled, set_dynamics_enabled, "on");
+    dynamics_enum_accessors!(get_dynamics_mode, set_dynamics_mode, DynamicsMode, "mode");
+    dynamics_enum_accessors!(
+        get_dynamics_detector,
+        set_dynamics_detector,
+        DynamicsDetector,
+        "det"
+    );
+    dynamics_enum_accessors!(
+        get_dynamics_envelope,
+        set_dynamics_envelope,
+        DynamicsEnvelope,
+        "env"
+    );
+    dynamics_float_accessors!(
+        get_dynamics_threshold_db,
+        set_dynamics_threshold_db,
+        "thr",
+        -60.0,
+        0.0,
+        false,
+        "dynamics threshold"
+    );
+    dynamics_enum_accessors!(
+        get_dynamics_ratio,
+        set_dynamics_ratio,
+        DynamicsRatio,
+        "ratio"
+    );
+    dynamics_float_accessors!(
+        get_dynamics_knee_db,
+        set_dynamics_knee_db,
+        "knee",
+        0.0,
+        5.0,
+        false,
+        "dynamics knee"
+    );
+    dynamics_float_accessors!(
+        get_dynamics_makeup_gain_db,
+        set_dynamics_makeup_gain_db,
+        "mgain",
+        0.0,
+        24.0,
+        false,
+        "dynamics makeup gain"
+    );
+    dynamics_float_accessors!(
+        get_dynamics_attack_ms,
+        set_dynamics_attack_ms,
+        "attack",
+        0.0,
+        120.0,
+        false,
+        "dynamics attack"
+    );
+    dynamics_float_accessors!(
+        get_dynamics_hold_ms,
+        set_dynamics_hold_ms,
+        "hold",
+        0.02,
+        2000.0,
+        true,
+        "dynamics hold"
+    );
+    dynamics_float_accessors!(
+        get_dynamics_release_ms,
+        set_dynamics_release_ms,
+        "release",
+        5.0,
+        4000.0,
+        true,
+        "dynamics release"
+    );
+    dynamics_float_accessors!(
+        get_dynamics_mix_percent,
+        set_dynamics_mix_percent,
+        "mix",
+        0.0,
+        100.0,
+        false,
+        "dynamics mix"
+    );
+    dynamics_bool_accessors!(get_dynamics_auto, set_dynamics_auto, "auto");
+    dynamics_bool_accessors!(
+        get_dynamics_filter_enabled,
+        set_dynamics_filter_enabled,
+        "filter/on"
+    );
+    dynamics_enum_accessors!(
+        get_dynamics_filter_type,
+        set_dynamics_filter_type,
+        DynamicsFilterType,
+        "filter/type"
+    );
+    dynamics_float_accessors!(
+        get_dynamics_filter_frequency_hz,
+        set_dynamics_filter_frequency_hz,
+        "filter/f",
+        20.0,
+        20_000.0,
+        true,
+        "dynamics filter frequency"
+    );
+
+    fn get_dynamics_key_source(&mut self, target: DynamicsTarget) -> io::Result<DynamicsKeySource> {
+        self.ensure_supported_firmware()?;
+        self.get_dynamics_key_source_for(target)
+    }
+
+    fn set_dynamics_key_source(
+        &mut self,
+        target: DynamicsTarget,
+        source: DynamicsKeySource,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_dynamics_key_source_for(target, source)
+    }
+
+    eq_bool_accessors!(get_eq_enabled, set_eq_enabled, "on");
+
+    fn get_eq_mode(&mut self, target: EqTarget) -> io::Result<crate::EqMode> {
+        self.ensure_supported_firmware()?;
+        if !matches!(target, EqTarget::Bus(_) | EqTarget::Main) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "EQ mode selection is available only on buses and Main LR",
+            ));
+        }
+        self.get_enum(&Self::eq_address(target, "mode")?)
+    }
+
+    fn set_eq_mode(&mut self, target: EqTarget, mode: crate::EqMode) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        if !matches!(target, EqTarget::Bus(_) | EqTarget::Main) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "EQ mode selection is available only on buses and Main LR",
+            ));
+        }
+        self.set_enum(&Self::eq_address(target, "mode")?, mode)
+    }
+
+    eq_band_enum_accessors!(get_eq_band_type, set_eq_band_type, EqBandType, "type");
+    eq_band_float_accessors!(
+        get_eq_band_frequency_hz,
+        set_eq_band_frequency_hz,
+        "f",
+        20.0,
+        20_000.0,
+        true,
+        "EQ frequency"
+    );
+    eq_band_float_accessors!(
+        get_eq_band_gain_db,
+        set_eq_band_gain_db,
+        "g",
+        -15.0,
+        15.0,
+        false,
+        "EQ band gain"
+    );
+
+    fn get_eq_band_q(&mut self, target: EqTarget, band: u8) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_reverse_log_float(&Self::eq_band_address(target, band, "q")?, 0.3, 10.0)
+    }
+
+    fn set_eq_band_q(&mut self, target: EqTarget, band: u8, q: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_reverse_log_float(
+            &Self::eq_band_address(target, band, "q")?,
+            q,
+            0.3,
+            10.0,
+            "EQ Q",
+        )
+    }
+
+    fn get_graphic_eq_gain_db(&mut self, target: EqTarget, frequency_hz: f32) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float(
+            &Self::graphic_eq_address(target, frequency_hz)?,
+            -15.0,
+            15.0,
+            false,
+        )
+    }
+
+    fn set_graphic_eq_gain_db(
+        &mut self,
+        target: EqTarget,
+        frequency_hz: f32,
+        gain_db: f32,
+    ) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            &Self::graphic_eq_address(target, frequency_hz)?,
+            gain_db,
+            -15.0,
+            15.0,
+            false,
+            "graphic EQ gain",
+        )
+    }
+
+    fn get_mixer_name(&mut self) -> io::Result<String> {
+        self.ensure_supported_firmware()?;
+        self.get_parameter_string("/-prefs/name")
+    }
+
+    fn set_mixer_name(&mut self, name: &str) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        validate_catalog_string(name, 24, "mixer name")?;
+        self.send_string_message("/-prefs/name", name)
+    }
+
+    fn get_autosave_enabled(&mut self) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter("/-stat/autosave")
+    }
+
+    fn set_autosave_enabled(&mut self, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter("/-stat/autosave", enabled)
+    }
+
+    fn get_power_on_mute_enabled(&mut self) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter("/-prefs/ponmute")
+    }
+
+    fn set_power_on_mute_enabled(&mut self, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter("/-prefs/ponmute", enabled)
+    }
+
+    fn get_hard_mute_enabled(&mut self) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter("/-prefs/hardmute")
+    }
+
+    fn set_hard_mute_enabled(&mut self, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter("/-prefs/hardmute", enabled)
+    }
+
+    fn get_dca_mute_enabled(&mut self) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter("/-prefs/dcamute")
+    }
+
+    fn set_dca_mute_enabled(&mut self, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter("/-prefs/dcamute", enabled)
+    }
+
+    fn get_usb_recorder_play_next_enabled(&mut self) -> io::Result<bool> {
+        self.ensure_usb_recorder()?;
+        self.get_bool_parameter("/-prefs/playnext")
+    }
+
+    fn set_usb_recorder_play_next_enabled(&mut self, enabled: bool) -> io::Result<()> {
+        self.ensure_usb_recorder()?;
+        self.set_bool_parameter("/-prefs/playnext", enabled)
+    }
+
+    fn get_clock_rate(&mut self) -> io::Result<ClockRate> {
+        self.ensure_supported_firmware()?;
+        self.get_enum("/-prefs/clockrate")
+    }
+
+    fn set_clock_rate(&mut self, rate: ClockRate) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum("/-prefs/clockrate", rate)
+    }
+
+    fn get_usb_interface_mode(&mut self) -> io::Result<crate::UsbInterfaceMode> {
+        self.ensure_model_family(&["XR18", "X18", "MR18"], "USB audio interface mode")?;
+        self.get_enum("/-prefs/usbifcmode")
+    }
+
+    fn set_usb_interface_mode(&mut self, mode: crate::UsbInterfaceMode) -> io::Result<()> {
+        self.ensure_model_family(&["XR18", "X18", "MR18"], "USB audio interface mode")?;
+        self.set_enum("/-prefs/usbifcmode", mode)
+    }
+
+    fn get_solo_level_db(&mut self) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_parameter_float("/config/solo/level")
+            .map(fader_to_db)
+    }
+
+    fn get_solo_active(&mut self) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter("/-stat/solo")
+    }
+
+    fn clear_solos(&mut self) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.send_int_message("/-action/clearsolo", Some(1))
+    }
+
+    fn set_solo_level_db(&mut self, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        if !value.is_finite() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "solo level must be finite",
+            ));
+        }
+        self.set_parameter_float("/config/solo/level", db_to_fader(value))
+    }
+
+    fn get_solo_source(&mut self) -> io::Result<SoloSource> {
+        self.ensure_supported_firmware()?;
+        self.get_enum("/config/solo/source")
+    }
+
+    fn set_solo_source(&mut self, source: SoloSource) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum("/config/solo/source", source)
+    }
+
+    fn get_solo_source_trim_db(&mut self) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float("/config/solo/sourcetrim", -18.0, 12.0, false)
+    }
+
+    fn set_solo_source_trim_db(&mut self, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            "/config/solo/sourcetrim",
+            value,
+            -18.0,
+            12.0,
+            false,
+            "solo source trim",
+        )
+    }
+
+    fn get_solo_channel_mode(&mut self) -> io::Result<SoloMode> {
+        self.ensure_supported_firmware()?;
+        self.get_enum("/config/solo/chmode")
+    }
+
+    fn set_solo_channel_mode(&mut self, mode: SoloMode) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum("/config/solo/chmode", mode)
+    }
+
+    fn get_solo_bus_mode(&mut self) -> io::Result<SoloMode> {
+        self.ensure_supported_firmware()?;
+        self.get_enum("/config/solo/busmode")
+    }
+
+    fn set_solo_bus_mode(&mut self, mode: SoloMode) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum("/config/solo/busmode", mode)
+    }
+
+    fn get_dim_attenuation_db(&mut self) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float("/config/solo/dimatt", -40.0, 0.0, false)
+    }
+
+    fn set_dim_attenuation_db(&mut self, value: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float(
+            "/config/solo/dimatt",
+            value,
+            -40.0,
+            0.0,
+            false,
+            "dim attenuation",
+        )
+    }
+
+    fn get_dim_enabled(&mut self) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter("/config/solo/dim")
+    }
+
+    fn set_dim_enabled(&mut self, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter("/config/solo/dim", enabled)
+    }
+
+    fn get_monitor_mono_enabled(&mut self) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter("/config/solo/mono")
+    }
+
+    fn set_monitor_mono_enabled(&mut self, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter("/config/solo/mono", enabled)
+    }
+
+    fn get_monitor_mute_enabled(&mut self) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter("/config/solo/mute")
+    }
+
+    fn set_monitor_mute_enabled(&mut self, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter("/config/solo/mute", enabled)
+    }
+
+    fn get_dim_pfl_enabled(&mut self) -> io::Result<bool> {
+        self.ensure_supported_firmware()?;
+        self.get_bool_parameter("/config/solo/dimpfl")
+    }
+
+    fn set_dim_pfl_enabled(&mut self, enabled: bool) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_bool_parameter("/config/solo/dimpfl", enabled)
+    }
+
+    fn get_rta_source(&mut self) -> io::Result<RtaSource> {
+        self.ensure_supported_firmware()?;
+        self.get_enum("/-stat/rta/source")
+    }
+
+    fn set_rta_source(&mut self, source: RtaSource) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum("/-stat/rta/source", source)
+    }
+
+    fn get_rta_position(&mut self) -> io::Result<RtaPosition> {
+        self.ensure_supported_firmware()?;
+        self.get_enum("/-stat/rta/pos")
+    }
+
+    fn set_rta_position(&mut self, position: RtaPosition) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum("/-stat/rta/pos", position)
+    }
+
+    fn get_rta_detector(&mut self) -> io::Result<DynamicsDetector> {
+        self.ensure_supported_firmware()?;
+        self.get_enum("/-prefs/rta/det")
+    }
+
+    fn set_rta_detector(&mut self, detector: DynamicsDetector) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_enum("/-prefs/rta/det", detector)
+    }
+
+    fn get_rta_decay_seconds(&mut self) -> io::Result<f32> {
+        self.ensure_supported_firmware()?;
+        self.get_scaled_float("/-prefs/rta/decay", 0.25, 16.0, true)
+    }
+
+    fn set_rta_decay_seconds(&mut self, seconds: f32) -> io::Result<()> {
+        self.ensure_supported_firmware()?;
+        self.set_scaled_float("/-prefs/rta/decay", seconds, 0.25, 16.0, true, "RTA decay")
     }
 
     fn get_channel_count(&mut self) -> io::Result<u8> {
@@ -632,6 +3491,7 @@ impl Mixer for BehringerXAir {
     }
 
     fn set_bus_label(&mut self, bus: u8, label: &str) -> io::Result<()> {
+        validate_catalog_string(label, 16, "bus label")?;
         let address = Self::bus_address(bus, "config/name")?;
         self.send_string_message(&address, label)
     }
@@ -864,6 +3724,7 @@ impl Mixer for BehringerXAir {
     }
 
     fn set_dca_label(&mut self, dca: u8, label: &str) -> io::Result<()> {
+        validate_catalog_string(label, 16, "DCA label")?;
         let address = Self::dca_address(dca, "config/name")?;
         self.send_string_message(&address, label)
     }
@@ -1038,6 +3899,54 @@ impl Mixer for BehringerXAir {
         self.subscribe_send_updates(Self::aux_bus_send_target(bus)?)
     }
 
+    fn get_aux_bus_send_enabled(&mut self, bus: u8) -> io::Result<bool> {
+        let target = Self::aux_bus_send_target(bus)?;
+        self.get_send_enabled(target.enabled_path()?)
+    }
+
+    fn set_aux_bus_send_enabled(&mut self, bus: u8, enabled: bool) -> io::Result<()> {
+        let target = Self::aux_bus_send_target(bus)?;
+        self.set_send_enabled(target.enabled_path()?, enabled)
+    }
+
+    fn get_aux_fx_send(&mut self, fx: u8) -> io::Result<f32> {
+        let target = Self::aux_fx_send_target(fx)?;
+        self.get_send_level(&target.level_path)
+    }
+
+    fn set_aux_fx_send(&mut self, fx: u8, value: f32) -> io::Result<()> {
+        let target = Self::aux_fx_send_target(fx)?;
+        self.set_send_level(&target.level_path, value)
+    }
+
+    fn get_aux_fx_send_db(&mut self, fx: u8) -> io::Result<f32> {
+        self.get_aux_fx_send(fx).map(fader_to_db)
+    }
+
+    fn set_aux_fx_send_db(&mut self, fx: u8, value: f32) -> io::Result<()> {
+        if !value.is_finite() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR Aux FX send dB value must be finite",
+            ));
+        }
+        self.set_aux_fx_send(fx, db_to_fader(value))
+    }
+
+    fn get_aux_fx_send_enabled(&mut self, fx: u8) -> io::Result<bool> {
+        let target = Self::aux_fx_send_target(fx)?;
+        self.get_send_enabled(target.enabled_path()?)
+    }
+
+    fn set_aux_fx_send_enabled(&mut self, fx: u8, enabled: bool) -> io::Result<()> {
+        let target = Self::aux_fx_send_target(fx)?;
+        self.set_send_enabled(target.enabled_path()?, enabled)
+    }
+
+    fn subscribe_aux_fx_send_updates(&mut self, fx: u8) -> io::Result<Box<dyn SendUpdateStream>> {
+        self.subscribe_send_updates(Self::aux_fx_send_target(fx)?)
+    }
+
     fn get_channel_label(&mut self, channel: u8) -> io::Result<String> {
         let address = Self::channel_address(channel, "config/name")?;
         self.send_message(&address, None)?;
@@ -1045,11 +3954,13 @@ impl Mixer for BehringerXAir {
     }
 
     fn set_channel_label(&mut self, channel: u8, label: &str) -> io::Result<()> {
+        validate_catalog_string(label, 16, "channel label")?;
         let address = Self::channel_address(channel, "config/name")?;
         self.send_string_message(&address, label)
     }
 
     fn get_channel_gain(&mut self, channel: u8) -> io::Result<f32> {
+        self.ensure_channel_preamp(channel)?;
         let address = Self::headamp_address(channel)?;
         self.send_message(&address, None)?;
         self.receive_float_value(&address)
@@ -1058,6 +3969,7 @@ impl Mixer for BehringerXAir {
     }
 
     fn set_channel_gain(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        self.ensure_channel_preamp(channel)?;
         if !value.is_finite() || !(-12.0..=60.0).contains(&value) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -1266,6 +4178,15 @@ struct BehringerXAirSendUpdateStream {
     last_subscription: Instant,
 }
 
+struct BehringerXAirParameterUpdateStream {
+    socket: UdpSocket,
+    last_subscription: Instant,
+}
+
+struct BehringerXAirTypedMeterStream {
+    stream: Box<dyn MeterStream>,
+}
+
 #[derive(Debug)]
 struct XAirSendTarget {
     level_path: String,
@@ -1421,6 +4342,50 @@ impl SendUpdateStream for BehringerXAirSendUpdateStream {
     }
 }
 
+impl ParameterUpdateStream for BehringerXAirParameterUpdateStream {
+    fn recv(&mut self) -> io::Result<ParameterUpdate> {
+        if self.last_subscription.elapsed() >= PARAMETER_SUBSCRIPTION_RENEW_INTERVAL {
+            send_parameter_subscription(&self.socket)?;
+            self.last_subscription = Instant::now();
+        }
+
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
+        let mut packet = [0_u8; MAX_PACKET_SIZE];
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timed out waiting for X AIR parameter update",
+                ));
+            }
+            self.socket.set_read_timeout(Some(remaining))?;
+            match self.socket.recv(&mut packet) {
+                Ok(packet_len) => {
+                    if let Some(update) = parse_parameter_update(&packet[..packet_len])? {
+                        return Ok(update);
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+impl TypedMeterStream for BehringerXAirTypedMeterStream {
+    fn recv(&mut self) -> io::Result<crate::TypedMeterSample> {
+        self.stream.recv()?.decode()
+    }
+}
+
 fn send_meter_subscription(socket: &UdpSocket, stream: MeterStreamId) -> io::Result<()> {
     socket.send(&build_meter_subscription_packet(stream)?)?;
     Ok(())
@@ -1489,6 +4454,124 @@ fn fader_to_db(value: f32) -> f32 {
     };
 
     (db * 10.0).round() / 10.0
+}
+
+fn parse_firmware_version(value: &str) -> Option<(u32, u32)> {
+    let mut parts = value
+        .split(|character: char| !character.is_ascii_digit())
+        .filter(|part| !part.is_empty());
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+fn automix_group_name(group: AutomixGroup) -> io::Result<&'static str> {
+    match group {
+        AutomixGroup::X => Ok("X"),
+        AutomixGroup::Y => Ok("Y"),
+        AutomixGroup::Off => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "automix group OFF has no global enable or lock control",
+        )),
+    }
+}
+
+fn fx_parameter_address(fx: u8, parameter: &str) -> io::Result<String> {
+    if !(1..=4).contains(&fx) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "FX engine must be between 1 and 4",
+        ));
+    }
+    if let Some(number) = parameter.strip_prefix("par/") {
+        let number = number.parse::<u8>().map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "FX parameter must be a number")
+        })?;
+        if !(1..=64).contains(&number) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "FX parameter must be between 1 and 64",
+            ));
+        }
+    }
+    Ok(format!("/fx/{fx}/{parameter}"))
+}
+
+fn validate_catalog_string(value: &str, max_length: usize, name: &str) -> io::Result<()> {
+    if value.contains('\0') || value.len() > max_length {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "X AIR {name} must be at most {max_length} bytes and contain no null character"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_recorder_entry(entry: u16) -> io::Result<()> {
+    if !(1..=200).contains(&entry) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "USB recorder entry must be between 1 and 200",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_group_number(group: u8, name: &str) -> io::Result<()> {
+    if !(1..=4).contains(&group) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} must be between 1 and 4"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_link_pair(first: u8, maximum: u8, name: &str) -> io::Result<()> {
+    if first == 0 || first > maximum || first % 2 == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("linked {name} pair must start at an odd number from 1 to {maximum}"),
+        ));
+    }
+    Ok(())
+}
+
+fn routing_output_has_source(output: RoutingOutput) -> bool {
+    let value = output as u8;
+    (RoutingOutput::Aux1 as u8..=RoutingOutput::Usb18 as u8).contains(&value)
+}
+
+fn is_usb_routing_output(output: RoutingOutput) -> bool {
+    (RoutingOutput::Usb1 as u8..=RoutingOutput::Usb18 as u8).contains(&(output as u8))
+}
+
+fn decode_linear_parameter(value: f32, minimum: f32, maximum: f32) -> f32 {
+    minimum + (maximum - minimum) * value
+}
+
+fn encode_linear_parameter(value: f32, minimum: f32, maximum: f32, name: &str) -> io::Result<f32> {
+    if !value.is_finite() || !(minimum..=maximum).contains(&value) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("X AIR {name} must be between {minimum} and {maximum}"),
+        ));
+    }
+    Ok((value - minimum) / (maximum - minimum))
+}
+
+fn decode_log_parameter(value: f32, minimum: f32, maximum: f32) -> f32 {
+    minimum * (maximum / minimum).powf(value)
+}
+
+fn encode_log_parameter(value: f32, minimum: f32, maximum: f32, name: &str) -> io::Result<f32> {
+    if !value.is_finite() || !(minimum..=maximum).contains(&value) || value <= 0.0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("X AIR {name} must be between {minimum} and {maximum}"),
+        ));
+    }
+    Ok((value / minimum).ln() / (maximum / minimum).ln())
 }
 
 fn db_to_fader(value: f32) -> f32 {
@@ -1635,6 +4718,40 @@ fn parse_int_response(packet: &[u8], expected_path: &str) -> io::Result<Option<i
     }
 
     Ok(None)
+}
+
+fn parse_parameter_update(packet: &[u8]) -> io::Result<Option<ParameterUpdate>> {
+    let mut offset = 0;
+    let address = read_osc_string(packet, &mut offset)?;
+    let arguments = read_parameter_arguments(packet, &mut offset)?;
+    let update_from = |path: &str, value: &OscArgument| {
+        let value = match value {
+            OscArgument::Float(value) => ParameterValue::Float(*value),
+            OscArgument::Int(value) => ParameterValue::Integer(*value),
+            OscArgument::Bool(value) => ParameterValue::Boolean(*value),
+            OscArgument::String(value) => ParameterValue::String(value.clone()),
+            OscArgument::Blob(_) | OscArgument::Other => return None,
+        };
+        Some(ParameterUpdate {
+            address: path.to_owned(),
+            value,
+        })
+    };
+
+    if address == "/status" {
+        for pair in arguments.windows(2) {
+            if let (value, OscArgument::String(path)) = (&pair[0], &pair[1]) {
+                if let Some(update) = update_from(path, value) {
+                    return Ok(Some(update));
+                }
+            }
+        }
+        return Ok(None);
+    }
+
+    Ok(arguments
+        .first()
+        .and_then(|value| update_from(&address, value)))
 }
 
 fn parse_channel_update(packet: &[u8], channel: u8) -> io::Result<Option<ChannelUpdate>> {
@@ -2261,7 +5378,7 @@ mod tests {
     fn send_target_paths_map_bus_and_fx_destinations() {
         let bus = BehringerXAir::channel_bus_send_target(1, 6).unwrap();
         assert_eq!(bus.level_path, "/ch/01/mix/06/level");
-        assert_eq!(bus.enabled_path.as_deref(), Some("/ch/01/mix/06/on"));
+        assert_eq!(bus.enabled_path.as_deref(), Some("/ch/01/mix/06/grpon"));
 
         let first_fx = BehringerXAir::channel_fx_send_target(16, 1).unwrap();
         assert_eq!(first_fx.level_path, "/ch/16/mix/07/level");
@@ -2271,7 +5388,7 @@ mod tests {
 
         let aux = BehringerXAir::aux_bus_send_target(2).unwrap();
         assert_eq!(aux.level_path, "/rtn/aux/mix/02/level");
-        assert_eq!(aux.enabled_path, None);
+        assert_eq!(aux.enabled_path.as_deref(), Some("/rtn/aux/mix/02/grpon"));
     }
 
     #[test]
@@ -2320,7 +5437,7 @@ mod tests {
         let (packet_len, _) = server.recv_from(&mut packet).unwrap();
         assert_eq!(
             &packet[..packet_len],
-            int_message("/ch/03/mix/10/on", 1).as_slice()
+            int_message("/ch/03/mix/10/grpon", 1).as_slice()
         );
 
         mixer.set_channel_fx_send_db(3, 1, -10.0).unwrap();
@@ -2359,13 +5476,13 @@ mod tests {
             let (request_len, client_addr) = server.recv_from(&mut request).unwrap();
             let expected = {
                 let mut packet = Vec::new();
-                append_osc_string(&mut packet, "/ch/02/mix/07/on");
+                append_osc_string(&mut packet, "/ch/02/mix/07/grpon");
                 append_osc_string(&mut packet, ",");
                 packet
             };
             assert_eq!(&request[..request_len], expected.as_slice());
             server
-                .send_to(&status_int_message(0, "/ch/02/mix/07/on"), client_addr)
+                .send_to(&status_int_message(0, "/ch/02/mix/07/grpon"), client_addr)
                 .unwrap();
         });
 
@@ -2386,7 +5503,7 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_send_update(&status_int_message(1, "/ch/04/mix/08/on"), &target).unwrap(),
+            parse_send_update(&status_int_message(1, "/ch/04/mix/08/grpon"), &target).unwrap(),
             Some(SendUpdate::Enabled(true))
         );
         assert_eq!(
@@ -2441,17 +5558,26 @@ mod tests {
     }
 
     #[test]
-    fn xair_aux_send_operations_without_individual_paths_are_unsupported() {
+    fn xair_aux_send_operations_use_catalog_paths() {
         let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let mut mixer = BehringerXAir::with_mixer_addr(server.local_addr().unwrap()).unwrap();
+        let mut packet = [0_u8; 128];
 
+        mixer.set_aux_bus_send_enabled(1, true).unwrap();
+        let (packet_len, _) = server.recv_from(&mut packet).unwrap();
         assert_eq!(
-            mixer.get_aux_bus_send_enabled(1).unwrap_err().kind(),
-            io::ErrorKind::Unsupported
+            &packet[..packet_len],
+            int_message("/rtn/aux/mix/01/grpon", 1).as_slice()
         );
+
+        mixer.set_aux_fx_send(1, 0.5).unwrap();
+        let (packet_len, _) = server.recv_from(&mut packet).unwrap();
         assert_eq!(
-            mixer.get_aux_fx_send(1).unwrap_err().kind(),
-            io::ErrorKind::Unsupported
+            &packet[..packet_len],
+            float_message("/rtn/aux/mix/07/level", 0.5).as_slice()
         );
     }
 
