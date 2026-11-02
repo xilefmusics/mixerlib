@@ -10,6 +10,37 @@ pub struct MixerInfo {
     pub ip_address: Option<IpAddr>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MixerStatus {
+    pub state: String,
+    pub ip_address: IpAddr,
+    pub name: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MeterStreamId {
+    Channel(u8),
+    AllChannels,
+    AllInputs,
+    Effects,
+    Rta,
+    AllOutputs,
+    AllDynamics,
+    AutomixGains,
+    Dcas,
+    Recorder,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MeterSample {
+    pub stream: MeterStreamId,
+    pub values: Vec<i16>,
+}
+
+pub trait MeterStream {
+    fn recv(&mut self) -> io::Result<MeterSample>;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ChannelMeter {
     pub pre_fader_dbfs: [f32; 2],
@@ -45,6 +76,13 @@ pub trait SendUpdateStream {
 }
 
 pub trait Mixer {
+    fn status(&mut self) -> io::Result<MixerStatus> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "mixer status is not supported",
+        ))
+    }
+
     fn info(&mut self) -> io::Result<MixerInfo> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -98,6 +136,111 @@ pub trait Mixer {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "bus labels are not supported",
+        ))
+    }
+
+    fn set_bus_label(&mut self, _bus: u8, _label: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting bus labels is not supported",
+        ))
+    }
+
+    fn get_bus_fader(&mut self, _bus: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "bus faders are not supported",
+        ))
+    }
+
+    fn set_bus_fader(&mut self, _bus: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting bus faders is not supported",
+        ))
+    }
+
+    fn get_bus_fader_db(&mut self, _bus: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "bus fader dB is not supported",
+        ))
+    }
+
+    fn set_bus_fader_db(&mut self, _bus: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting bus faders in dB is not supported",
+        ))
+    }
+
+    fn get_bus_mute(&mut self, _bus: u8) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "bus mute is not supported",
+        ))
+    }
+
+    fn set_bus_mute(&mut self, _bus: u8, _muted: bool) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting bus mute is not supported",
+        ))
+    }
+
+    fn subscribe_bus_updates(&mut self, _bus: u8) -> io::Result<Box<dyn ChannelUpdateStream>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "bus updates are not supported",
+        ))
+    }
+
+    fn get_snapshot_name(&mut self, _snapshot: u8) -> io::Result<String> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "snapshot names are not supported",
+        ))
+    }
+
+    fn set_snapshot_name(&mut self, _snapshot: u8, _name: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting snapshot names is not supported",
+        ))
+    }
+
+    fn get_snapshot_scope(&mut self, _snapshot: u8) -> io::Result<String> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "snapshot scopes are not supported",
+        ))
+    }
+
+    fn set_snapshot_scope(&mut self, _snapshot: u8, _scope: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting snapshot scopes is not supported",
+        ))
+    }
+
+    fn save_snapshot(&mut self, _snapshot: u8, _name: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "saving snapshots is not supported",
+        ))
+    }
+
+    fn load_snapshot(&mut self, _snapshot: u8) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "loading snapshots is not supported",
+        ))
+    }
+
+    fn delete_snapshot(&mut self, _snapshot: u8) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "deleting snapshots is not supported",
         ))
     }
 
@@ -223,6 +366,20 @@ pub trait Mixer {
             io::ErrorKind::Unsupported,
             "channel metering is not supported",
         ))
+    }
+
+    fn subscribe_meter_stream(
+        &mut self,
+        _stream: MeterStreamId,
+    ) -> io::Result<Box<dyn MeterStream>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "meter streams are not supported",
+        ))
+    }
+
+    fn get_meter_sample(&mut self, stream: MeterStreamId) -> io::Result<MeterSample> {
+        self.subscribe_meter_stream(stream)?.recv()
     }
 
     fn get_channel_meter(&mut self, channel: u8) -> io::Result<ChannelMeter> {
@@ -638,7 +795,7 @@ pub trait Mixer {
 
 #[cfg(test)]
 mod tests {
-    use super::Mixer;
+    use super::{MeterStreamId, Mixer};
     use std::io;
 
     struct BasicMixer;
@@ -676,6 +833,31 @@ mod tests {
         );
         assert_eq!(
             mixer.get_aux_fx_send(1).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+    }
+
+    #[test]
+    fn unsupported_mixer_reports_new_protocol_features_as_unsupported() {
+        let mut mixer = BasicMixer;
+        assert_eq!(
+            mixer.status().unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            mixer.set_bus_label(1, "Bus").unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            mixer
+                .subscribe_meter_stream(MeterStreamId::AllChannels)
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            mixer.save_snapshot(1, "Scene").unwrap_err().kind(),
             io::ErrorKind::Unsupported
         );
     }

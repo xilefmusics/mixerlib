@@ -3,7 +3,10 @@ use std::net::IpAddr;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mixerlib::{BehringerXAir, ChannelMeter, ChannelUpdate, Mixer, MixerInfo, SendUpdate};
+use mixerlib::{
+    BehringerXAir, ChannelMeter, ChannelUpdate, MeterSample, MeterStreamId, Mixer, MixerInfo,
+    MixerStatus, SendUpdate,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -32,6 +35,7 @@ enum MixerFamily {
 #[derive(Debug, Subcommand)]
 enum Command {
     Info,
+    Status,
     Ch(ChannelArgs),
     Aux(AuxArgs),
     Main(FaderArgs),
@@ -39,6 +43,8 @@ enum Command {
     Dca(DcaArgs),
     Bus(BusArgs),
     MuteGroup(MuteGroupArgs),
+    Meter(MeterArgs),
+    Snapshot(SnapshotArgs),
 }
 
 #[derive(Debug, Args)]
@@ -204,13 +210,79 @@ struct BusArgs {
 enum BusAction {
     Get {
         #[arg(value_enum)]
-        field: BusGetField,
+        field: Option<BusGetField>,
     },
+    Set(BusSetArgs),
+    Subscribe,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum BusGetField {
+    #[value(name = "db")]
+    Db,
     Label,
+    Mute,
+}
+
+#[derive(Debug, Args)]
+struct BusSetArgs {
+    #[command(subcommand)]
+    action: Option<BusSetAction>,
+
+    #[arg(allow_hyphen_values = true)]
+    value: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum BusSetAction {
+    Label { label: String },
+    Mute { value: String },
+}
+
+#[derive(Debug, Args)]
+struct MeterArgs {
+    #[arg(value_parser = clap::value_parser!(u8).range(0..=9))]
+    id: u8,
+    #[arg(value_parser = clap::value_parser!(u8).range(1..=16))]
+    channel: Option<u8>,
+
+    #[command(subcommand)]
+    action: MeterAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum MeterAction {
+    Get,
+    Subscribe,
+}
+
+#[derive(Debug, Args)]
+struct SnapshotArgs {
+    #[arg(value_parser = clap::value_parser!(u8).range(1..=64))]
+    snapshot: u8,
+
+    #[command(subcommand)]
+    action: SnapshotAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum SnapshotAction {
+    Get,
+    Set {
+        #[command(subcommand)]
+        action: SnapshotSetAction,
+    },
+    Save {
+        name: String,
+    },
+    Load,
+    Delete,
+}
+
+#[derive(Debug, Subcommand)]
+enum SnapshotSetAction {
+    Name { name: String },
+    Scope { scope: String },
 }
 
 #[derive(Debug, Args)]
@@ -349,6 +421,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    validate_command(&cli.command)?;
     let Cli {
         mixer_family,
         ip,
@@ -365,9 +438,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn validate_command(command: &Command) -> io::Result<()> {
+    match command {
+        Command::Meter(args) => {
+            meter_stream_id(args.id, args.channel)?;
+        }
+        Command::Snapshot(args) if !(1..=64).contains(&args.snapshot) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "snapshot slot must be between 1 and 64",
+            ));
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
 fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Command::Info => print_info(mixer.info()?),
+        Command::Status => print_status(mixer.status()?),
         Command::Aux(AuxArgs { action }) => match action {
             AuxAction::Get { field } => {
                 run_fader_action(mixer, FaderTarget::Aux, FaderAction::Get { field })?;
@@ -385,11 +476,7 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
             run_fader_action(mixer, FaderTarget::Fx(fx), action)?;
         }
         Command::Dca(DcaArgs { dca, action }) => run_dca_action(mixer, dca, action)?,
-        Command::Bus(BusArgs { bus, action }) => match action {
-            BusAction::Get {
-                field: BusGetField::Label,
-            } => println!("{}", mixer.get_bus_label(bus)?),
-        },
+        Command::Bus(BusArgs { bus, action }) => run_bus_action(mixer, bus, action)?,
         Command::MuteGroup(MuteGroupArgs { group, action }) => match action {
             MuteGroupAction::Get => println!("{}", mixer.get_mute_group_active(group)?),
             MuteGroupAction::Set { value } => {
@@ -529,8 +616,176 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
                 },
             },
         },
+        Command::Meter(args) => run_meter_action(mixer, args)?,
+        Command::Snapshot(args) => run_snapshot_action(mixer, args)?,
     }
 
+    Ok(())
+}
+
+fn run_bus_action(
+    mixer: &mut impl Mixer,
+    bus: u8,
+    action: BusAction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        BusAction::Get { field } => match field {
+            Some(BusGetField::Db) => println!("{} dB", mixer.get_bus_fader_db(bus)?),
+            Some(BusGetField::Label) => println!("{}", mixer.get_bus_label(bus)?),
+            Some(BusGetField::Mute) => println!("{}", mixer.get_bus_mute(bus)?),
+            None => println!("{}", mixer.get_bus_fader(bus)?),
+        },
+        BusAction::Set(args) => match (args.action, args.value) {
+            (Some(BusSetAction::Label { label }), None) => {
+                mixer.set_bus_label(bus, &label)?;
+                println!("ok");
+            }
+            (Some(BusSetAction::Mute { value }), None) => {
+                mixer.set_bus_mute(bus, parse_bool_value(&value)?)?;
+                println!("ok");
+            }
+            (None, Some(value)) => {
+                if value.to_ascii_lowercase().ends_with("db") {
+                    mixer.set_bus_fader_db(bus, parse_db_value(&value)?)?;
+                } else {
+                    mixer.set_bus_fader(bus, value.parse::<f32>()?)?;
+                }
+                println!("ok");
+            }
+            (Some(_), Some(_)) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unexpected value after bus setting",
+                )
+                .into());
+            }
+            (None, None) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "expected a bus fader value or setting",
+                )
+                .into());
+            }
+        },
+        BusAction::Subscribe => {
+            let mut stream = mixer.subscribe_bus_updates(bus)?;
+            let stdout = io::stdout();
+            let mut output = stdout.lock();
+            loop {
+                match stream.recv() {
+                    Ok(update) => {
+                        writeln!(output, "{}", format_bus_update_line(bus, update))?;
+                        output.flush()?;
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn meter_stream_id(id: u8, channel: Option<u8>) -> io::Result<MeterStreamId> {
+    let stream = match id {
+        0 => MeterStreamId::Channel(channel.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "meter stream 0 requires a channel number from 1 to 16",
+            )
+        })?),
+        1 if channel.is_none() => MeterStreamId::AllChannels,
+        2 if channel.is_none() => MeterStreamId::AllInputs,
+        3 if channel.is_none() => MeterStreamId::Effects,
+        4 if channel.is_none() => MeterStreamId::Rta,
+        5 if channel.is_none() => MeterStreamId::AllOutputs,
+        6 if channel.is_none() => MeterStreamId::AllDynamics,
+        7 if channel.is_none() => MeterStreamId::AutomixGains,
+        8 if channel.is_none() => MeterStreamId::Dcas,
+        9 if channel.is_none() => MeterStreamId::Recorder,
+        1..=9 => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "meter streams 1 to 9 do not take a channel number",
+            ));
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "meter stream ID must be between 0 and 9",
+            ));
+        }
+    };
+
+    if matches!(stream, MeterStreamId::Channel(channel) if !(1..=16).contains(&channel)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "meter stream 0 requires a channel number from 1 to 16",
+        ));
+    }
+
+    Ok(stream)
+}
+
+fn run_meter_action(
+    mixer: &mut impl Mixer,
+    args: MeterArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let stream_id = meter_stream_id(args.id, args.channel)?;
+    match args.action {
+        MeterAction::Get => print_meter_sample(mixer.get_meter_sample(stream_id)?),
+        MeterAction::Subscribe => {
+            let mut stream = mixer.subscribe_meter_stream(stream_id)?;
+            let stdout = io::stdout();
+            let mut output = stdout.lock();
+            loop {
+                match stream.recv() {
+                    Ok(sample) => {
+                        writeln!(output, "{}", format_meter_sample(&sample))?;
+                        output.flush()?;
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_snapshot_action(
+    mixer: &mut impl Mixer,
+    args: SnapshotArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let is_get = matches!(&args.action, SnapshotAction::Get);
+    match args.action {
+        SnapshotAction::Get => {
+            println!("Name: {}", mixer.get_snapshot_name(args.snapshot)?);
+            println!("Scope: {}", mixer.get_snapshot_scope(args.snapshot)?);
+        }
+        SnapshotAction::Set { action } => match action {
+            SnapshotSetAction::Name { name } => mixer.set_snapshot_name(args.snapshot, &name)?,
+            SnapshotSetAction::Scope { scope } => {
+                mixer.set_snapshot_scope(args.snapshot, &scope)?
+            }
+        },
+        SnapshotAction::Save { name } => mixer.save_snapshot(args.snapshot, &name)?,
+        SnapshotAction::Load => mixer.load_snapshot(args.snapshot)?,
+        SnapshotAction::Delete => mixer.delete_snapshot(args.snapshot)?,
+    }
+    if !is_get {
+        println!("ok");
+    }
     Ok(())
 }
 
@@ -968,6 +1223,23 @@ fn print_info(info: MixerInfo) {
     }
 }
 
+fn print_status(status: MixerStatus) {
+    println!("Status: {}", status.state);
+    println!("Name: {}", status.name);
+    println!("IP: {}", status.ip_address);
+}
+
+fn print_meter_sample(sample: MeterSample) {
+    println!("{}", format_meter_sample(&sample));
+}
+
+fn format_meter_sample(sample: &MeterSample) -> String {
+    format!(
+        "{:?} raw meter values (1/256 dB): {:?}",
+        sample.stream, sample.values
+    )
+}
+
 fn format_channel_meter(meter: ChannelMeter) -> String {
     format!(
         "Pre-fader: L {:.1} dBFS, R {:.1} dBFS\nPost-fader: L {:.1} dBFS, R {:.1} dBFS",
@@ -1001,11 +1273,26 @@ fn format_channel_update_line(channel: u8, update: ChannelUpdate) -> String {
     }
 }
 
+fn format_bus_update_line(bus: u8, update: ChannelUpdate) -> String {
+    match update {
+        ChannelUpdate::Mute(value) => format!("bus {bus} | mute: {value}"),
+        ChannelUpdate::Fader { value, db } => {
+            format!("bus {bus} | fader: {value:.3} ({db:.1} dB)")
+        }
+        ChannelUpdate::Label(value) => format!("bus {bus} | label: {value}"),
+        ChannelUpdate::Gain(value) => format!("bus {bus} | gain: {value:.1} dB"),
+        ChannelUpdate::Solo(value) => format!("bus {bus} | solo: {value}"),
+        ChannelUpdate::Pan(value) => format!("bus {bus} | pan: {value:.3}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        format_channel_meter, AuxAction, ChannelAction, ChannelGetField, ChannelMeter, Cli,
-        Command, SendAction, SendDestinationArgs, SendGetField, SendSetAction,
+        format_channel_meter, meter_stream_id, validate_command, AuxAction, BusAction, BusGetField,
+        ChannelAction, ChannelGetField, ChannelMeter, Cli, Command, MeterAction, MeterArgs,
+        MeterStreamId, SendAction, SendDestinationArgs, SendGetField, SendSetAction,
+        SnapshotAction, SnapshotArgs, SnapshotSetAction,
     };
     use clap::Parser;
 
@@ -1024,6 +1311,154 @@ mod tests {
             },
             _ => panic!("expected channel command"),
         }
+    }
+
+    #[test]
+    fn parses_server_status_command() {
+        let cli = Cli::try_parse_from(["mixinglib", "--ip", "127.0.0.1", "status"]).unwrap();
+        assert!(matches!(cli.command, Command::Status));
+    }
+
+    #[test]
+    fn parses_generic_meter_get_and_subscription_commands() {
+        let cli = Cli::try_parse_from(["mixinglib", "--ip", "127.0.0.1", "meter", "0", "3", "get"])
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Meter(MeterArgs {
+                id: 0,
+                channel: Some(3),
+                action: MeterAction::Get,
+            })
+        ));
+
+        let cli =
+            Cli::try_parse_from(["mixinglib", "--ip", "127.0.0.1", "meter", "1", "subscribe"])
+                .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Meter(MeterArgs {
+                id: 1,
+                channel: None,
+                action: MeterAction::Subscribe,
+            })
+        ));
+    }
+
+    #[test]
+    fn meter_cli_selection_requires_a_valid_channel_only_for_stream_zero() {
+        assert_eq!(
+            meter_stream_id(0, Some(4)).unwrap(),
+            MeterStreamId::Channel(4)
+        );
+        assert_eq!(
+            meter_stream_id(1, None).unwrap(),
+            MeterStreamId::AllChannels
+        );
+        assert!(meter_stream_id(0, None).is_err());
+        assert!(meter_stream_id(1, Some(4)).is_err());
+        assert!(meter_stream_id(10, None).is_err());
+
+        for args in [vec!["meter", "0", "get"], vec!["meter", "1", "4", "get"]] {
+            let mut command_args = vec!["mixinglib", "--ip", "127.0.0.1"];
+            command_args.extend(args);
+            let cli = Cli::try_parse_from(command_args).unwrap();
+            assert!(validate_command(&cli.command).is_err());
+        }
+
+        for args in [
+            vec!["meter", "10", "subscribe"],
+            vec!["meter", "0", "0", "get"],
+        ] {
+            let mut command_args = vec!["mixinglib", "--ip", "127.0.0.1"];
+            command_args.extend(args);
+            assert!(Cli::try_parse_from(command_args).is_err());
+        }
+    }
+
+    #[test]
+    fn parses_snapshot_save_and_scope_commands() {
+        let cli = Cli::try_parse_from([
+            "mixinglib",
+            "--ip",
+            "127.0.0.1",
+            "snapshot",
+            "12",
+            "save",
+            "New Scene",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Snapshot(SnapshotArgs {
+                snapshot: 12,
+                action: SnapshotAction::Save { ref name },
+            }) if name == "New Scene"
+        ));
+
+        let cli = Cli::try_parse_from([
+            "mixinglib",
+            "--ip",
+            "127.0.0.1",
+            "snapshot",
+            "12",
+            "set",
+            "scope",
+            &"+".repeat(59),
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Snapshot(SnapshotArgs {
+                action: SnapshotAction::Set {
+                    action: SnapshotSetAction::Scope { .. }
+                },
+                ..
+            })
+        ));
+
+        for slot in ["0", "65"] {
+            assert!(Cli::try_parse_from([
+                "mixinglib",
+                "--ip",
+                "127.0.0.1",
+                "snapshot",
+                slot,
+                "get"
+            ])
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn parses_bus_fader_label_mute_and_subscription_commands() {
+        for args in [
+            vec!["bus", "3", "get", "label"],
+            vec!["bus", "3", "get", "db"],
+            vec!["bus", "3", "get", "mute"],
+            vec!["bus", "3", "set", "-6db"],
+            vec!["bus", "3", "set", "label", "Wedge"],
+            vec!["bus", "3", "set", "mute", "on"],
+            vec!["bus", "3", "subscribe"],
+        ] {
+            let mut command_args = vec!["mixinglib", "--ip", "127.0.0.1"];
+            command_args.extend(args);
+            let cli = Cli::try_parse_from(command_args).unwrap();
+            assert!(matches!(cli.command, Command::Bus(_)));
+        }
+
+        let cli =
+            Cli::try_parse_from(["mixinglib", "--ip", "127.0.0.1", "bus", "3", "get", "label"])
+                .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Bus(super::BusArgs {
+                action: BusAction::Get {
+                    field: Some(BusGetField::Label)
+                },
+                ..
+            })
+        ));
     }
 
     #[test]

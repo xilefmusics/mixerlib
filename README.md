@@ -1,8 +1,8 @@
 # mixerlib
 
-`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading mixer inventory, channel meters, labels, preamp gain, fader level, mute, solo, pan, DCA controls, mute groups, and bus/effect send levels and states; subscribing to meter samples and control changes; and setting these controls.
+`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading mixer status and inventory, channel and aggregate meter streams, labels, preamp gain, fader level, mute, solo, pan, DCA controls, mute groups, snapshots, bus-master controls, and bus/effect send levels and states; subscribing to meter samples and control changes; and setting these controls.
 
-The `mixinglib` command-line program reads channel meters and controls, subscribes to meter and control changes, and changes channel, DCA, mute group, and send controls.
+The `mixinglib` command-line program reads mixer status, snapshots, meter streams, and controls, subscribes to meter and control changes, and changes channel, bus, DCA, mute group, snapshot, and send controls.
 
 Request mixer information:
 
@@ -11,6 +11,12 @@ cargo run -- -i <MIXER_IP> info
 ```
 
 The X AIR implementation requests `/xinfo` and prints the mixer name, model, firmware version, and IP address. It also prints the server version when the mixer provides it.
+
+Read the OSC server status:
+
+```sh
+cargo run -- -i <MIXER_IP> status
+```
 
 The `Mixer` inventory methods return counts for channels, Aux inputs, FX returns, buses, mute groups, and DCA groups. The X AIR implementation reads the model from `/xinfo` on the first count request, then uses the model's configured counts:
 
@@ -56,6 +62,15 @@ Subscribe to the channel meter and print one line per sample. Stop the stream wi
 cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> subscribe meter
 ```
 
+Read or subscribe to the other meter streams. Meter ID 0 takes a channel number from 1 to 16. IDs 1–9 select all-channel, input, FX, RTA, output, dynamics, automix, DCA, and recorder meters. These generic streams print raw signed samples in 1/256 dB units:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> meter 0 <CHANNEL> get
+cargo run -- -m xair -i <MIXER_IP> meter 0 <CHANNEL> subscribe
+cargo run -- -m xair -i <MIXER_IP> meter 1 get
+cargo run -- -m xair -i <MIXER_IP> meter 4 subscribe
+```
+
 Subscribe to channel control changes and print each updated value. This reports label, gain, fader, mute, solo, and pan changes. Stop the stream with Ctrl-C:
 
 ```sh
@@ -97,10 +112,28 @@ cargo run -- -m xair -i <MIXER_IP> fx 1 get
 cargo run -- -m xair -i <MIXER_IP> fx 4 set -6db
 ```
 
-Read a bus label. Bus numbers range from 1 to 6:
+Read and set bus labels, bus-master faders, and mute. Bus numbers range from 1 to 6. Fader values accept normalized `0.0`–`1.0` values or dB values with a `db` suffix:
 
 ```sh
 cargo run -- -m xair -i <MIXER_IP> bus 1 get label
+cargo run -- -m xair -i <MIXER_IP> bus 1 set label "Monitor Wedge"
+cargo run -- -m xair -i <MIXER_IP> bus 1 get
+cargo run -- -m xair -i <MIXER_IP> bus 1 get db
+cargo run -- -m xair -i <MIXER_IP> bus 1 set -6db
+cargo run -- -m xair -i <MIXER_IP> bus 1 get mute
+cargo run -- -m xair -i <MIXER_IP> bus 1 set mute on
+cargo run -- -m xair -i <MIXER_IP> bus 1 subscribe
+```
+
+Read and change snapshot slots 1–64. Scope strings contain exactly 59 characters; `+` includes a category in recall and `-` excludes it:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> snapshot 12 get
+cargo run -- -m xair -i <MIXER_IP> snapshot 12 set name "Soundcheck"
+cargo run -- -m xair -i <MIXER_IP> snapshot 12 set scope "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+cargo run -- -m xair -i <MIXER_IP> snapshot 12 save "Soundcheck"
+cargo run -- -m xair -i <MIXER_IP> snapshot 12 load
+cargo run -- -m xair -i <MIXER_IP> snapshot 12 delete
 ```
 
 Read and set DCA faders, mute state, and labels. DCA numbers range from 1 to 4. DCA faders accept normalized values from `0.0` to `1.0` or dB values with a `db` suffix:

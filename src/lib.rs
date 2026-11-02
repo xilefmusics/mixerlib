@@ -3,6 +3,6 @@ mod mixer;
 
 pub use behringer_x_air::BehringerXAir;
 pub use mixer::{
-    ChannelMeter, ChannelMeterStream, ChannelUpdate, ChannelUpdateStream, Mixer, MixerInfo,
-    SendUpdate, SendUpdateStream,
+    ChannelMeter, ChannelMeterStream, ChannelUpdate, ChannelUpdateStream, MeterSample, MeterStream,
+    MeterStreamId, Mixer, MixerInfo, MixerStatus, SendUpdate, SendUpdateStream,
 };

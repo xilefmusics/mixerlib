@@ -1,6 +1,55 @@
-# Open Sound Control (OSC)
+# Behringer X AIR / Midas M AIR OSC
 
 The default reference for the OSC message format is the [Open Sound Control Specification 1.0](https://opensoundcontrol.stanford.edu/spec-1_0.html).
+
+## Protocol and library feature matrix
+
+This matrix compares the firmware 1.11-or-higher protocol described in the [official AIR-Series OSC documentation](https://mediadl.musictribe.com/download/software/midas/M-AIR/M%20AIR%20Remote%20Control%20Protocol.pdf) with the `BehringerXAir` implementation. The protocol supports generic parameter paths; the vendor's `Parameters.txt` file defines the complete path list and parameter ranges. The library exposes a fixed subset through `Mixer` methods and does not provide a public arbitrary-path OSC client.
+
+In the request-level matrix, **Supported**, **Partial**, and **Not exposed** describe coverage by this library. GET requests for parameter paths use the `,` type tag with no arguments; SET requests show the argument type and value.
+
+| Protocol feature | Protocol capability | Library coverage |
+| --- | --- | --- |
+| UDP transport and OSC messages | Mixer listens on UDP port `10024`; OSC values use standard OSC types and encoding. | **Supported** for the library's implemented paths. |
+| Generic parameter GET and SET | Read or write a parameter at any valid OSC path; a GET response echoes the value and path. | **Partial.** Fixed `Mixer` methods send and receive supported floats, integers, and strings. Arbitrary paths are not exposed; blob decoding is available for meter streams. |
+| Mixer information | `/info` and `/xinfo` return the device name, model, firmware version, and implementation-specific fields. | **Partial.** `info()` requests `/xinfo`; replies to `/xinfo` and `/info` are parsed. |
+| Server status | `/status` reports whether the server is active or on standby, along with its address and name. | **Supported.** `status()` returns state, IP address, and server name. |
+| Parameter change subscription | `/xremote` streams parameter changes to up to eight clients; a subscription expires after ten seconds. | **Partial.** Streams filter channel, Aux/Main/FX fader, DCA, and supported send updates. They renew every five seconds while `recv()` is called; arbitrary parameter subscriptions are not exposed. |
+| Selected-channel meters | `/meters` can subscribe to `/meters/0` for one channel's eight meter values. | **Supported.** The generic stream preserves all eight signed samples; `ChannelMeter` remains a convenience view of pre/post L/R levels. |
+| Aggregate and specialized meters | `/meters/1`–`/meters/9` cover all-channel, input, FX, RTA, output, dynamics, automix, DCA, and recorder meters. | **Supported.** The generic meter stream returns the raw signed values from each selected stream. |
+| Snapshots | `/snap/` and `/01/`–`/64/` paths support snapshot names, recall scopes, save, load, and delete. | **Supported.** Snapshot name and scope can be read or set; slots can be saved, loaded, or deleted. |
+
+| Mixer feature | UDP GET request | UDP SET request | Subscription request | Library coverage |
+| --- | --- | --- | --- | --- |
+| Mixer information | `/xinfo ,` | — | — | **Supported.** `info()` sends `/xinfo`; the parser accepts `/xinfo` and `/info` replies. |
+| Model inventory | First count call sends `/xinfo ,` if model information has not been read. | — | — | **Partial.** Counts use static profiles for supported models; unknown models return `Unsupported`. |
+| Channel label (`nn` = `01`–`16`) | `/ch/nn/config/name ,` | `/ch/nn/config/name ,s <label>` | `/xremote ,` | **Supported.** GET/SET and channel update stream. |
+| Channel preamp gain | `/headamp/nn/gain ,` | `/headamp/nn/gain ,f <0.0..1.0>` | `/xremote ,` | **Supported.** API reads/writes dB from -12 to +60; updates include gain in dB. |
+| Channel fader | `/ch/nn/mix/fader ,` | `/ch/nn/mix/fader ,f <0.0..1.0>` | `/xremote ,` | **Supported.** Normalized and dB GET/SET; channel update stream. |
+| Channel mute | `/ch/nn/mix/on ,` | `/ch/nn/mix/on ,i <0|1>` (`0` = muted) | `/xremote ,` | **Supported.** GET/SET and channel update stream; the API exposes mute state. |
+| Channel solo | `/-stat/solosw/nn ,` | `/-stat/solosw/nn ,i <0|1>` | `/xremote ,` | **Supported.** GET/SET and channel update stream. |
+| Channel pan | `/ch/nn/mix/pan ,` | `/ch/nn/mix/pan ,f <0.0..1.0>` | `/xremote ,` | **Supported.** GET/SET and channel update stream. |
+| Channel DCA/mute-group assignment | `/ch/nn/grp/dca ,` or `/ch/nn/grp/mute ,` | Same path with `,i <updated bit mask>` | — | **Supported.** The API reads the mask, changes one membership bit, then writes the updated mask. |
+| Mute-group activation (`g` = `1`–`4`) | `/config/mute/g ,` | `/config/mute/g ,i <0|1>` | — | **Supported.** GET/SET activation; there is no mute-group update stream. |
+| Bus label (`b` = `1`–`6`) | `/bus/b/config/name ,` | `/bus/b/config/name ,s <label>` | — | **Supported.** Label GET/SET; no label update stream. |
+| Bus master fader/mute (`b` = `1`–`6`) | `/bus/b/mix/fader ,` and `/bus/b/mix/on ,` | Fader: `,f <0.0..1.0>`; mute: `,i <0|1>` (`0` = muted) | `/xremote ,` | **Supported.** Fader and mute GET/SET, fader dB helpers, and filtered update stream. |
+| Stereo Aux fader | `/rtn/aux/mix/fader ,` | `/rtn/aux/mix/fader ,f <0.0..1.0>` | `/xremote ,` | **Supported.** Normalized and dB GET/SET; fader update stream. |
+| Main LR fader | `/lr/mix/fader ,` | `/lr/mix/fader ,f <0.0..1.0>` | `/xremote ,` | **Supported.** Normalized and dB GET/SET; fader update stream. |
+| FX return fader (`f` = `1`–`4`) | `/rtn/f/mix/fader ,` | `/rtn/f/mix/fader ,f <0.0..1.0>` | `/xremote ,` | **Supported.** Normalized and dB GET/SET; fader update stream. |
+| DCA label/fader/mute (`d` = `1`–`4`) | `/dca/d/config/name ,`, `/dca/d/fader ,`, `/dca/d/on ,` | Name: `,s <label>`; fader: `,f <0.0..1.0>`; mute: `,i <0|1>` (`0` = muted) | `/xremote ,` | **Supported.** GET/SET and DCA update stream for label, fader, and mute. |
+| Channel-to-bus send (`b` = `01`–`06`) | `/ch/nn/mix/b/level ,` and `/ch/nn/mix/b/on ,` | Level: `,f <0.0..1.0>`; enabled: `,i <0|1>` | `/xremote ,` | **Supported.** GET/SET, dB helpers, and level/enabled update stream. |
+| Channel-to-FX send (`x` = `1`–`4`, destination `mm` = `x + 6`) | `/ch/nn/mix/mm/level ,` and `/ch/nn/mix/mm/on ,` | Level: `,f <0.0..1.0>`; enabled: `,i <0|1>` | `/xremote ,` | **Supported.** GET/SET, dB helpers, and level/enabled update stream. |
+| Aux-to-bus send (`b` = `01`–`06`) | `/rtn/aux/mix/b/level ,` | `/rtn/aux/mix/b/level ,f <0.0..1.0>` | `/xremote ,` | **Partial.** Level GET/SET and level update stream; per-send enabled state is not exposed. |
+| Aux send enabled state or Aux-to-FX send | No individual request path is exposed by this implementation. | No individual request path is exposed by this implementation. | — | **Not exposed.** Corresponding `Mixer` methods return `Unsupported`. |
+| Selected-channel meters | — | — | `/meters ,si "/meters/0" <channel - 1>`; mixer returns `/meters/0` blob updates. | **Supported.** `MeterSample` preserves all eight raw values; `ChannelMeter` returns pre/post L/R dBFS. |
+| Other meter streams | — | — | `/meters ,s "/meters/1"` through `/meters/9` (stream-specific data); mixer returns a blob on the selected meter path. | **Supported.** `MeterSample` preserves the variable-length raw values for all IDs 1–9. |
+| Server status | `/status ,` | — | — | **Supported.** `status()` parses state, IP address, and server name. |
+| Snapshots | `/snap/name ,`, `/snap/index ,`, and `/{01..64}/name ,` or `/{01..64}/scope ,` | `/snap/name ,s <name>`, `/snap/load ,i <index>`, `/snap/save ,i <index>`, `/snap/delete ,i <index>`, and `/{01..64}/name ,s <name>` or `/{01..64}/scope ,s <scope>` | — | **Supported.** Name/scope GET/SET and slot save/load/delete are available. |
+| Other processing and routing | Generic GET at a valid vendor parameter path | Generic SET at a valid vendor parameter path with its OSC value type | `/xremote ,` broadcasts parameter changes | **Not exposed through `Mixer`.** The API has no methods for EQ, dynamics, FX editing, input/source or output routing, recorder, or automix controls. |
+
+Parameter reads use an OSC message with no arguments (`,`); SET examples show the OSC type tag and value. Meter subscription requests carry their own arguments as shown. Writes send one UDP packet and do not wait for acknowledgement. `/xremote ,` sends parameter changes to the subscription socket; library streams filter those messages to the selected target.
+
+Supported model profiles are XR12, MR12, XR16, XR18, X18, and MR18. See [Mixer inventory](#mixer-inventory) for their configured counts.
 
 ## Behringer X AIR channel controls over UDP
 
@@ -50,6 +99,7 @@ The `BehringerXAir` implementation maps the public `Mixer` trait methods to thes
 
 | `Mixer` method | OSC request | Behavior |
 | --- | --- | --- |
+| `status()` | `/status ,` | Returns server state, IP address, and server name. |
 | `info()` | `/xinfo ,` | Returns `MixerInfo` with name, model, firmware version, and optional server version and IP address. |
 | `get_channel_count()` | `/xinfo ,` on the first count request | Returns the configured input-channel count for the reported model. |
 | `get_aux_count()` | `/xinfo ,` on the first count request | Returns the configured count of stereo Aux/USB return strips. |
@@ -58,6 +108,15 @@ The `BehringerXAir` implementation maps the public `Mixer` trait methods to thes
 | `get_mute_group_count()` | `/xinfo ,` on the first count request | Returns the configured mute group count. |
 | `get_dca_group_count()` | `/xinfo ,` on the first count request | Returns the configured DCA group count. |
 | `get_bus_label(bus)` | `/bus/{bus}/config/name ,` | Returns the label for bus 1–6. |
+| `set_bus_label(bus, label)` | `/bus/{bus}/config/name ,s <label>` | Sets the label for bus 1–6. |
+| `get_bus_fader(bus)` / `set_bus_fader(bus, value)` | `/bus/{bus}/mix/fader` | Reads or sets normalized bus-master fader level for buses 1–6. |
+| `get_bus_fader_db(bus)` / `set_bus_fader_db(bus, value)` | `/bus/{bus}/mix/fader` | Reads or sets the bus-master fader using the X AIR fader dB taper. |
+| `get_bus_mute(bus)` / `set_bus_mute(bus, muted)` | `/bus/{bus}/mix/on` | Reads or sets bus mute for buses 1–6; the OSC `on` value is inverted. |
+| `subscribe_bus_updates(bus)` | `/xremote ,` | Streams bus fader and mute changes as `ChannelUpdate` values. |
+| `get_snapshot_name(snapshot)` / `set_snapshot_name(snapshot, name)` | `/{snapshot:02}/name` | Reads or sets the name for snapshot slots 1–64. Names are limited to 31 characters. |
+| `get_snapshot_scope(snapshot)` / `set_snapshot_scope(snapshot, scope)` | `/{snapshot:02}/scope` | Reads or sets the opaque 59-character recall-scope string for snapshot slots 1–64. |
+| `save_snapshot(snapshot, name)` | `/snap/name ,s <name>`, then `/snap/save ,i <snapshot>` | Saves the current mixer state to slot 1–64 using the supplied name. |
+| `load_snapshot(snapshot)` / `delete_snapshot(snapshot)` | `/snap/load ,i <snapshot>` / `/snap/delete ,i <snapshot>` | Loads or deletes snapshot slot 1–64. |
 | `get_mute_group_active(group)` / `set_mute_group_active(group, active)` | `/config/mute/{group}` | Reads or sets activation state for mute group 1–4. `active` is encoded as OSC integer `0` or `1`. |
 | `get_channel_label(channel)` | `/ch/nn/config/name ,` | Returns the channel label as a string. |
 | `set_channel_label(channel, label)` | `/ch/nn/config/name ,s <label>` | Sends the channel label as an OSC string. |
@@ -74,6 +133,7 @@ The `BehringerXAir` implementation maps the public `Mixer` trait methods to thes
 | `subscribe_channel_updates(channel)` | `/xremote ,` | Returns pushed changes for the channel label, preamp gain, mute, solo, pan, and fader. Fader updates include normalized and dB values. |
 | `subscribe_channel_meter(channel)` | `/meters ,si "/meters/0" <channel - 1>` | Opens a meter subscription and returns a stream of pre- and post-fader L/R levels in dBFS. |
 | `get_channel_meter(channel)` | `/meters ,si "/meters/0" <channel - 1>` | Returns the first sample from a channel meter subscription. |
+| `subscribe_meter_stream(stream)` / `get_meter_sample(stream)` | `/meters ,si "/meters/0" <channel - 1>` for `Channel(channel)`; `/meters ,s "/meters/{id}"` for IDs 1–9 | Returns all signed raw meter samples, each in 1/256 dB units. Meter IDs 1–9 map to the protocol's aggregate and specialized streams. |
 | `get_channel(channel)` | `/ch/nn/mix/fader ,` for channels 1–16 | Returns the normalized fader value from `0.0` to `1.0`. |
 | `set_channel(channel, value)` | `/ch/nn/mix/fader ,f <value>` for channels 1–16 | Sets the normalized fader value; `value` must be finite and from `0.0` to `1.0`. |
 | `get_channel_db(channel)` | `/ch/nn/mix/fader ,` for channels 1–16 | Returns the fader value converted to dB and rounded to 0.1 dB. |
@@ -116,9 +176,11 @@ DCA faders use `/dca/{dca}/fader`, while their mute state uses `/dca/{dca}/on` w
 
 ## Channel meter subscriptions
 
-Meter reads use a dedicated UDP socket. The client sends `/meters ,si "/meters/0" <channel - 1>` to subscribe to one channel; the mixer sends repeated `/meters/0` messages containing an OSC blob. The blob contains a little-endian 32-bit value count followed by eight little-endian signed 16-bit values, each representing dBFS in units of 1/256 dB. The values are pre-fader L/R, gate gain reduction, compressor gain reduction, post-fader L/R, gate key, and compressor key. The library returns the pre- and post-fader pairs as `ChannelMeter` values.
+Meter reads use a dedicated UDP socket. The client sends `/meters ,si "/meters/0" <channel - 1>` to subscribe to one channel; the mixer sends repeated `/meters/0` messages containing an OSC blob. The blob contains a little-endian 32-bit value count followed by signed 16-bit values in little-endian order, each representing dBFS in units of 1/256 dB. For meter ID 0, the eight values are pre-fader L/R, gate gain reduction, compressor gain reduction, post-fader L/R, gate key, and compressor key. `subscribe_meter_stream()` returns all raw values in `MeterSample`; `subscribe_channel_meter()` remains a convenience adapter that returns only the pre- and post-fader pairs as `ChannelMeter` values.
 
 The stream resends its subscription every five seconds while it is being read. `ChannelMeterStream::recv()` waits for the next update and uses the library’s one-second response timeout. Dropping the stream closes its socket. `get_channel_meter()` subscribes, reads one sample, and then drops the stream.
+
+`subscribe_meter_stream()` supports `MeterStreamId::Channel(channel)` for ID 0 and the named IDs `AllChannels`, `AllInputs`, `Effects`, `Rta`, `AllOutputs`, `AllDynamics`, `AutomixGains`, `Dcas`, and `Recorder` for IDs 1–9. ID 0 requires a channel from 1 to 16; the other IDs do not take a channel. Each `MeterSample` preserves the packet's raw signed `i16` values in 1/256 dB units. Meter subscriptions renew every five seconds while the stream is read.
 
 ## Channel control subscriptions
 
@@ -134,6 +196,8 @@ Channel bus sends use `/ch/{channel:02}/mix/{bus:02}/level` and `/on`, with chan
 
 The stereo Aux input supports bus send levels at `/rtn/aux/mix/{bus:02}/level`. The X AIR implementation does not expose per-send Aux enabled-state operations because its documented control is a group flag, and it does not expose Aux-to-FX operations. The corresponding `Mixer` methods exist and return `Unsupported` for these operations. Other mixer implementations may provide them.
 
+Bus labels use `/bus/{bus}/config/name`. Bus-master faders and mute use `/bus/{bus}/mix/fader` and `/bus/{bus}/mix/on` for buses 1–6. The bus fader supports normalized values and dB conversion; bus mute uses the inverted OSC `on` value. `subscribe_bus_updates()` filters `/xremote` changes to the selected bus fader and mute paths.
+
 The stream reports changes received after it is opened; it does not provide an initial channel snapshot. Use the corresponding GET methods to read the starting state. The subscription is renewed every five seconds while `ChannelUpdateStream::recv()` is being called. A receive with no matching change uses the library’s one-second timeout. Dropping the stream stops renewals, and the mixer expires the subscription after ten seconds. The protocol allows up to eight active `/xremote` clients.
 
 The fader OSC float uses a piecewise dB taper. Decoding uses `40x - 30` for `x >= 0.5`, `80x - 50` for `x >= 0.25`, `160x - 70` for `x >= 0.0625`, and `480x - 90` below that, rounded to 0.1 dB. Values at or above `1.0` decode to `+10 dB`; values below `0.0` decode to the `-90 dB` floor. Encoding uses the inverse segments, with values below `-90 dB` mapped to `0.0` and values above `+10 dB` mapped to `1.0`.
@@ -141,6 +205,12 @@ The fader OSC float uses a piecewise dB taper. Decoding uses `40x - 30` for `x >
 ## Mixer information
 
 `info()` sends `/xinfo ,` to request mixer information. Its `/xinfo` reply provides the mixer name, model, and firmware version, and may also include the server version and IP address. The protocol also defines `/info`, whose reply omits the IP address; the implementation recognizes `/info` replies but does not send an `/info` request.
+
+`status()` sends `/status ,` and returns the server state, IP address, and name from the status reply. The status parser rejects replies that omit these fields or contain an invalid IP address.
+
+## Snapshots
+
+Snapshot slots are numbered 1–64. `get_snapshot_name()` and `get_snapshot_scope()` read `/{slot:02}/name` and `/{slot:02}/scope`; setters write an OSC string to those paths. Names are limited to 31 characters and scopes must contain exactly 59 characters. `save_snapshot(slot, name)` stages `/snap/name` and then sends `/snap/save` with the slot as an OSC integer. `load_snapshot()` and `delete_snapshot()` send the corresponding `/snap/load` and `/snap/delete` integer requests. These writes do not wait for an acknowledgement.
 
 ## Mixer inventory
 
