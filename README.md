@@ -1,8 +1,8 @@
 # mixerlib
 
-`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading and setting channel labels, preamp gain, fader level, mute, solo, and pan, with a network-connected mixer implementation.
+`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading channel meters, labels, preamp gain, fader level, mute, solo, and pan, and for setting channel labels, preamp gain, fader level, mute, solo, and pan, with a network-connected mixer implementation.
 
-The `mixinglib` command-line program reads and changes those channel controls.
+The `mixinglib` command-line program reads channel meters and controls, and changes channel controls.
 
 Request mixer information:
 
@@ -32,6 +32,18 @@ Append `db` to read the channel fader in decibels:
 
 ```sh
 cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> get db
+```
+
+Read one current channel meter sample, including pre- and post-fader L/R levels in dBFS:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> get meter
+```
+
+Subscribe to the channel meter and print one line per sample. Stop the stream with Ctrl-C:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> subscribe meter
 ```
 
 Read a channel label:
@@ -140,6 +152,18 @@ fn read_pan(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<f32> {
 
 fn set_pan(mixer: &mut impl Mixer, channel: u8, value: f32) -> std::io::Result<()> {
     mixer.set_channel_pan(channel, value)
+}
+
+fn read_meter(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<mixerlib::ChannelMeter> {
+    mixer.get_channel_meter(channel)
+}
+
+fn stream_meter(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<()> {
+    let mut stream = mixer.subscribe_channel_meter(channel)?;
+    loop {
+        let meter = stream.recv()?;
+        println!("pre: {:?}, post: {:?}", meter.pre_fader_dbfs, meter.post_fader_dbfs);
+    }
 }
 ```
 

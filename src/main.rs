@@ -1,9 +1,9 @@
-use std::io;
+use std::io::{self, Write};
 use std::net::IpAddr;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mixerlib::{BehringerXAir, Mixer, MixerInfo};
+use mixerlib::{BehringerXAir, ChannelMeter, Mixer, MixerInfo};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -50,6 +50,10 @@ enum ChannelAction {
         field: Option<ChannelGetField>,
     },
     Set(ChannelSetArgs),
+    Subscribe {
+        #[arg(value_enum)]
+        field: ChannelSubscribeField,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -88,9 +92,15 @@ enum ChannelGetField {
     Db,
     Gain,
     Label,
+    Meter,
     Mute,
     Solo,
     Pan,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ChannelSubscribeField {
+    Meter,
 }
 
 fn main() -> ExitCode {
@@ -133,6 +143,12 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
                     println!("{} dB", mixer.get_channel_gain(channel)?);
                 }
                 Some(ChannelGetField::Label) => println!("{}", mixer.get_channel_label(channel)?),
+                Some(ChannelGetField::Meter) => {
+                    println!(
+                        "{}",
+                        format_channel_meter(mixer.get_channel_meter(channel)?)
+                    );
+                }
                 Some(ChannelGetField::Mute) => println!("{}", mixer.get_channel_mute(channel)?),
                 Some(ChannelGetField::Solo) => println!("{}", mixer.get_channel_solo(channel)?),
                 Some(ChannelGetField::Pan) => println!("{}", mixer.get_channel_pan(channel)?),
@@ -184,6 +200,27 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
                     .into());
                 }
             },
+            ChannelAction::Subscribe { field } => match field {
+                ChannelSubscribeField::Meter => {
+                    let mut stream = mixer.subscribe_channel_meter(channel)?;
+                    let stdout = io::stdout();
+                    let mut output = stdout.lock();
+                    loop {
+                        match stream.recv() {
+                            Ok(meter) => {
+                                writeln!(output, "{}", format_channel_meter_line(channel, meter))?;
+                                output.flush()?;
+                            }
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                                ) => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                }
+            },
         },
     }
 
@@ -219,5 +256,59 @@ fn print_info(info: MixerInfo) {
     }
     if let Some(ip_address) = info.ip_address {
         println!("IP: {ip_address}");
+    }
+}
+
+fn format_channel_meter(meter: ChannelMeter) -> String {
+    format!(
+        "Pre-fader: L {:.1} dBFS, R {:.1} dBFS\nPost-fader: L {:.1} dBFS, R {:.1} dBFS",
+        meter.pre_fader_dbfs[0],
+        meter.pre_fader_dbfs[1],
+        meter.post_fader_dbfs[0],
+        meter.post_fader_dbfs[1]
+    )
+}
+
+fn format_channel_meter_line(channel: u8, meter: ChannelMeter) -> String {
+    format!(
+        "channel {channel} | pre: L {:.1} dBFS, R {:.1} dBFS | post: L {:.1} dBFS, R {:.1} dBFS",
+        meter.pre_fader_dbfs[0],
+        meter.pre_fader_dbfs[1],
+        meter.post_fader_dbfs[0],
+        meter.post_fader_dbfs[1]
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_channel_meter, ChannelGetField, ChannelMeter, Cli, Command};
+    use clap::Parser;
+
+    #[test]
+    fn parses_meter_get_command() {
+        let cli =
+            Cli::try_parse_from(["mixinglib", "--ip", "127.0.0.1", "ch", "3", "get", "meter"])
+                .unwrap();
+
+        match cli.command {
+            Command::Ch(args) => match args.action {
+                super::ChannelAction::Get {
+                    field: Some(ChannelGetField::Meter),
+                } => {}
+                _ => panic!("expected meter GET command"),
+            },
+            _ => panic!("expected channel command"),
+        }
+    }
+
+    #[test]
+    fn formats_meter_readings_in_dbfs() {
+        assert_eq!(
+            format_channel_meter(ChannelMeter {
+                pre_fader_dbfs: [-12.0, -10.5],
+                post_fader_dbfs: [-6.0, -4.5],
+            }),
+            "Pre-fader: L -12.0 dBFS, R -10.5 dBFS\nPost-fader: L -6.0 dBFS, R -4.5 dBFS"
+        );
     }
 }

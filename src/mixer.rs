@@ -10,6 +10,16 @@ pub struct MixerInfo {
     pub ip_address: Option<IpAddr>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChannelMeter {
+    pub pre_fader_dbfs: [f32; 2],
+    pub post_fader_dbfs: [f32; 2],
+}
+
+pub trait ChannelMeterStream {
+    fn recv(&mut self) -> io::Result<ChannelMeter>;
+}
+
 pub trait Mixer {
     fn info(&mut self) -> io::Result<MixerInfo> {
         Err(io::Error::new(
@@ -88,6 +98,17 @@ pub trait Mixer {
         ))
     }
 
+    fn subscribe_channel_meter(&mut self, _channel: u8) -> io::Result<Box<dyn ChannelMeterStream>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel metering is not supported",
+        ))
+    }
+
+    fn get_channel_meter(&mut self, channel: u8) -> io::Result<ChannelMeter> {
+        self.subscribe_channel_meter(channel)?.recv()
+    }
+
     fn get_channel(&mut self, channel: u8) -> io::Result<f32>;
 
     fn set_channel(&mut self, channel: u8, value: f32) -> io::Result<()>;
@@ -95,4 +116,36 @@ pub trait Mixer {
     fn get_channel_db(&mut self, channel: u8) -> io::Result<f32>;
 
     fn set_channel_db(&mut self, channel: u8, value: f32) -> io::Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Mixer;
+    use std::io;
+
+    struct BasicMixer;
+
+    impl Mixer for BasicMixer {
+        fn get_channel(&mut self, _channel: u8) -> io::Result<f32> {
+            Ok(0.0)
+        }
+
+        fn set_channel(&mut self, _channel: u8, _value: f32) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn get_channel_db(&mut self, _channel: u8) -> io::Result<f32> {
+            Ok(0.0)
+        }
+
+        fn set_channel_db(&mut self, _channel: u8, _value: f32) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn unsupported_mixer_reports_metering_as_unsupported() {
+        let error = BasicMixer.get_channel_meter(1).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    }
 }

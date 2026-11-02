@@ -2,12 +2,14 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
-use crate::{Mixer, MixerInfo};
+use crate::{ChannelMeter, ChannelMeterStream, Mixer, MixerInfo};
 
 const X_AIR_OSC_PORT: u16 = 10024;
 const MAX_INPUT_CHANNEL: u8 = 16;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_PACKET_SIZE: usize = 4096;
+const METER_SUBSCRIPTION_RENEW_INTERVAL: Duration = Duration::from_secs(5);
+const CHANNEL_METER_ADDRESS: &str = "/meters/0";
 
 #[derive(Debug)]
 pub struct BehringerXAir {
@@ -16,11 +18,15 @@ pub struct BehringerXAir {
 
 impl BehringerXAir {
     pub fn new(mixer_ip: IpAddr) -> io::Result<Self> {
-        let bind_addr = match mixer_ip {
+        let mixer_addr = SocketAddr::new(mixer_ip, X_AIR_OSC_PORT);
+        Self::with_mixer_addr(mixer_addr)
+    }
+
+    fn with_mixer_addr(mixer_addr: SocketAddr) -> io::Result<Self> {
+        let bind_addr = match mixer_addr.ip() {
             IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
         };
-        let mixer_addr = SocketAddr::new(mixer_ip, X_AIR_OSC_PORT);
         let socket = UdpSocket::bind(bind_addr)?;
         socket.connect(mixer_addr)?;
         socket.set_read_timeout(Some(RESPONSE_TIMEOUT))?;
@@ -254,6 +260,31 @@ impl Mixer for BehringerXAir {
         self.receive_mixer_info()
     }
 
+    fn subscribe_channel_meter(&mut self, channel: u8) -> io::Result<Box<dyn ChannelMeterStream>> {
+        if !(1..=MAX_INPUT_CHANNEL).contains(&channel) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("channel must be between 1 and {MAX_INPUT_CHANNEL}"),
+            ));
+        }
+
+        let meter_socket = UdpSocket::bind(match self.socket.peer_addr()?.ip() {
+            IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        })?;
+        meter_socket.connect(self.socket.peer_addr()?)?;
+        meter_socket.set_read_timeout(Some(RESPONSE_TIMEOUT))?;
+
+        let channel_id = channel - 1;
+        send_meter_subscription(&meter_socket, channel_id)?;
+
+        Ok(Box::new(BehringerXAirChannelMeterStream {
+            socket: meter_socket,
+            channel_id,
+            last_subscription: Instant::now(),
+        }))
+    }
+
     fn get_channel_label(&mut self, channel: u8) -> io::Result<String> {
         let address = Self::channel_address(channel, "config/name")?;
         self.send_message(&address, None)?;
@@ -362,6 +393,66 @@ impl Mixer for BehringerXAir {
     }
 }
 
+struct BehringerXAirChannelMeterStream {
+    socket: UdpSocket,
+    channel_id: u8,
+    last_subscription: Instant,
+}
+
+impl ChannelMeterStream for BehringerXAirChannelMeterStream {
+    fn recv(&mut self) -> io::Result<ChannelMeter> {
+        if self.last_subscription.elapsed() >= METER_SUBSCRIPTION_RENEW_INTERVAL {
+            send_meter_subscription(&self.socket, self.channel_id)?;
+            self.last_subscription = Instant::now();
+        }
+
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
+        let mut packet = [0_u8; MAX_PACKET_SIZE];
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timed out waiting for X AIR channel meter update",
+                ));
+            }
+            self.socket.set_read_timeout(Some(remaining))?;
+
+            match self.socket.recv(&mut packet) {
+                Ok(packet_len) => {
+                    if let Some(meter) = parse_channel_meter_response(&packet[..packet_len])? {
+                        return Ok(meter);
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+fn send_meter_subscription(socket: &UdpSocket, channel_id: u8) -> io::Result<()> {
+    socket.send(&build_meter_subscription_packet(channel_id))?;
+    Ok(())
+}
+
+fn build_meter_subscription_packet(channel_id: u8) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(40);
+    append_osc_string(&mut packet, "/meters");
+    append_osc_string(&mut packet, ",si");
+    append_osc_string(&mut packet, CHANNEL_METER_ADDRESS);
+    packet.extend_from_slice(&(i32::from(channel_id)).to_be_bytes());
+    packet
+}
+
 fn fader_to_db(value: f32) -> f32 {
     let db = if value >= 1.0 {
         10.0
@@ -410,6 +501,7 @@ enum OscArgument {
     Float(f32),
     Int(i32),
     Bool(bool),
+    Blob(Vec<u8>),
     Other,
 }
 
@@ -444,9 +536,12 @@ fn read_parameter_arguments(packet: &[u8], offset: &mut usize) -> io::Result<Vec
             'b' => {
                 let length = read_bytes(packet, offset, 4)?;
                 let length = u32::from_be_bytes(length.try_into().unwrap()) as usize;
-                let padded_length = (length + 3) & !3;
-                read_bytes(packet, offset, padded_length)?;
-                OscArgument::Other
+                let padded_length = length
+                    .checked_add(3)
+                    .map(|length| length & !3)
+                    .ok_or_else(|| invalid_osc_data("OSC blob length overflow"))?;
+                let bytes = read_bytes(packet, offset, padded_length)?;
+                OscArgument::Blob(bytes[..length].to_vec())
             }
             'T' => OscArgument::Bool(true),
             'F' => OscArgument::Bool(false),
@@ -491,6 +586,46 @@ fn parse_float_response(packet: &[u8], expected_path: &str) -> io::Result<Option
     }
 
     Ok(None)
+}
+
+fn parse_channel_meter_response(packet: &[u8]) -> io::Result<Option<ChannelMeter>> {
+    let mut offset = 0;
+    let address = read_osc_string(packet, &mut offset)?;
+    if address != CHANNEL_METER_ADDRESS {
+        return Ok(None);
+    }
+
+    let arguments = read_parameter_arguments(packet, &mut offset)?;
+    let [OscArgument::Blob(blob)] = arguments.as_slice() else {
+        return Err(invalid_osc_data(
+            "X AIR channel meter response did not contain one blob",
+        ));
+    };
+
+    if blob.len() < 4 {
+        return Err(invalid_osc_data(
+            "X AIR channel meter blob is missing its value count",
+        ));
+    }
+
+    let value_count = u32::from_le_bytes(blob[..4].try_into().unwrap()) as usize;
+    if value_count != 8 || blob.len() != 4 + value_count * 2 {
+        return Err(invalid_osc_data(
+            "X AIR channel meter blob must contain exactly eight values",
+        ));
+    }
+
+    let mut values = [0.0_f32; 8];
+    for (index, value) in values.iter_mut().enumerate() {
+        let start = 4 + index * 2;
+        let raw = i16::from_le_bytes(blob[start..start + 2].try_into().unwrap());
+        *value = f32::from(raw) / 256.0;
+    }
+
+    Ok(Some(ChannelMeter {
+        pre_fader_dbfs: [values[0], values[1]],
+        post_fader_dbfs: [values[4], values[5]],
+    }))
 }
 
 fn parse_channel_label_response(packet: &[u8], expected_path: &str) -> io::Result<Option<String>> {
@@ -705,4 +840,146 @@ fn read_bytes<'a>(packet: &'a [u8], offset: &mut usize, length: usize) -> io::Re
 
 fn invalid_osc_data(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+
+    fn meter_packet(values: [i16; 8]) -> Vec<u8> {
+        let mut blob = Vec::with_capacity(20);
+        blob.extend_from_slice(&8_u32.to_le_bytes());
+        for value in values {
+            blob.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let mut packet = Vec::new();
+        append_osc_string(&mut packet, CHANNEL_METER_ADDRESS);
+        append_osc_string(&mut packet, ",b");
+        packet.extend_from_slice(&(blob.len() as u32).to_be_bytes());
+        packet.extend_from_slice(&blob);
+        while packet.len() % 4 != 0 {
+            packet.push(0);
+        }
+        packet
+    }
+
+    fn expected_meter() -> ChannelMeter {
+        ChannelMeter {
+            pre_fader_dbfs: [-12.0, -8.0],
+            post_fader_dbfs: [-3.0, -1.0],
+        }
+    }
+
+    fn expected_meter_packet() -> Vec<u8> {
+        meter_packet([-3072, -2048, -512, -256, -768, -256, -32768, 0])
+    }
+
+    #[test]
+    fn meter_subscription_uses_channel_selector_and_osc_encoding() {
+        let packet = build_meter_subscription_packet(8);
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"/meters\0");
+        expected.extend_from_slice(b",si\0");
+        expected.extend_from_slice(b"/meters/0\0\0\0");
+        expected.extend_from_slice(&8_i32.to_be_bytes());
+
+        assert_eq!(packet, expected);
+    }
+
+    #[test]
+    fn parses_channel_meter_levels_from_blob() {
+        assert_eq!(
+            parse_channel_meter_response(&expected_meter_packet()).unwrap(),
+            Some(expected_meter())
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_channel_meter_blob() {
+        let mut packet = expected_meter_packet();
+        packet.truncate(packet.len() - 4);
+
+        assert_eq!(
+            parse_channel_meter_response(&packet).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn get_channel_meter_reads_first_subscription_sample() {
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        let server_thread = thread::spawn(move || {
+            let mut request = [0_u8; 128];
+            let (request_len, client_addr) = server.recv_from(&mut request).unwrap();
+            assert_eq!(
+                &request[..request_len],
+                build_meter_subscription_packet(2).as_slice()
+            );
+            server
+                .send_to(&expected_meter_packet(), client_addr)
+                .unwrap();
+        });
+
+        let mut mixer = BehringerXAir::with_mixer_addr(server_addr).unwrap();
+        assert_eq!(mixer.get_channel_meter(3).unwrap(), expected_meter());
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn meter_stream_renews_subscription_and_receives_updates() {
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        socket.connect(server_addr).unwrap();
+        socket.set_read_timeout(Some(RESPONSE_TIMEOUT)).unwrap();
+        send_meter_subscription(&socket, 4).unwrap();
+
+        let mut stream = BehringerXAirChannelMeterStream {
+            socket,
+            channel_id: 4,
+            last_subscription: Instant::now() - METER_SUBSCRIPTION_RENEW_INTERVAL,
+        };
+
+        let server_thread = thread::spawn(move || {
+            let mut request = [0_u8; 128];
+            let (request_len, client_addr) = server.recv_from(&mut request).unwrap();
+            assert_eq!(
+                &request[..request_len],
+                build_meter_subscription_packet(4).as_slice()
+            );
+            server
+                .send_to(&expected_meter_packet(), client_addr)
+                .unwrap();
+
+            let (request_len, client_addr) = server.recv_from(&mut request).unwrap();
+            assert_eq!(
+                &request[..request_len],
+                build_meter_subscription_packet(4).as_slice()
+            );
+            server
+                .send_to(&meter_packet([-512; 8]), client_addr)
+                .unwrap();
+        });
+
+        assert_eq!(stream.recv().unwrap(), expected_meter());
+        assert_eq!(
+            stream.recv().unwrap(),
+            ChannelMeter {
+                pre_fader_dbfs: [-2.0, -2.0],
+                post_fader_dbfs: [-2.0, -2.0],
+            }
+        );
+        server_thread.join().unwrap();
+    }
 }
