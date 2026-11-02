@@ -4,6 +4,14 @@
 
 The `mixinglib` command-line program reads and changes mixer faders.
 
+Request mixer information:
+
+```sh
+cargo run -- --ip <MIXER_IP> info
+```
+
+The X AIR implementation requests `/xinfo` and prints the mixer name, model, firmware version, and IP address. It also prints the server version when the mixer provides it.
+
 ## Getting started
 
 Build the project and CLI:

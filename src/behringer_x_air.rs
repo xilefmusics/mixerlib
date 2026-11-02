@@ -2,7 +2,7 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
-use crate::Mixer;
+use crate::{Mixer, MixerInfo};
 
 const X_AIR_OSC_PORT: u16 = 10024;
 const MAX_INPUT_CHANNEL: u8 = 16;
@@ -88,9 +88,47 @@ impl BehringerXAir {
             }
         }
     }
+
+    fn receive_mixer_info(&self) -> io::Result<MixerInfo> {
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
+        let mut packet = [0_u8; MAX_PACKET_SIZE];
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timed out waiting for X AIR OSC info response",
+                ));
+            }
+            self.socket.set_read_timeout(Some(remaining))?;
+
+            match self.socket.recv(&mut packet) {
+                Ok(packet_len) => {
+                    if let Some(info) = parse_info_response(&packet[..packet_len])? {
+                        return Ok(info);
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
 }
 
 impl Mixer for BehringerXAir {
+    fn info(&mut self) -> io::Result<MixerInfo> {
+        self.send_message("/xinfo", None)?;
+        self.receive_mixer_info()
+    }
+
     fn get_channel(&mut self, channel: u8) -> io::Result<f32> {
         let address = Self::channel_address(channel)?;
         self.send_message(&address, None)?;
@@ -193,6 +231,101 @@ fn parse_fader_response(packet: &[u8], expected_path: &str) -> io::Result<Option
     }
 
     Ok(None)
+}
+
+fn parse_info_response(packet: &[u8]) -> io::Result<Option<MixerInfo>> {
+    let mut offset = 0;
+    let address = read_osc_string(packet, &mut offset)?;
+    if address != "/info" && address != "/xinfo" {
+        return Ok(None);
+    }
+
+    let type_tags = read_osc_string(packet, &mut offset)?;
+    let Some(type_tags) = type_tags.strip_prefix(',') else {
+        return Err(invalid_osc_data(
+            "X AIR info response is missing its type-tag prefix",
+        ));
+    };
+
+    let mut values = Vec::new();
+    for type_tag in type_tags.chars() {
+        match type_tag {
+            's' | 'S' => values.push(read_osc_string(packet, &mut offset)?),
+            'f' | 'i' | 'c' | 'r' | 'm' => {
+                read_bytes(packet, &mut offset, 4)?;
+            }
+            'h' | 't' | 'd' => {
+                read_bytes(packet, &mut offset, 8)?;
+            }
+            'b' => {
+                let length = read_bytes(packet, &mut offset, 4)?;
+                let length = u32::from_be_bytes(length.try_into().unwrap()) as usize;
+                let padded_length = (length + 3) & !3;
+                read_bytes(packet, &mut offset, padded_length)?;
+            }
+            'T' | 'F' | 'N' | 'I' | '[' | ']' => {}
+            unsupported => {
+                return Err(invalid_osc_data(&format!(
+                    "unsupported OSC type tag `{unsupported}` in X AIR info response"
+                )))
+            }
+        }
+    }
+
+    let (server_version, ip_address, name_index, model_index, firmware_index) =
+        match (address.as_str(), values.len()) {
+            ("/xinfo", 4) => (None, Some(info_value(&values[0], "ip_address")), 1, 2, 3),
+            ("/xinfo", count) if count >= 5 => (
+                Some(info_value(&values[0], "server_version")),
+                Some(info_value(&values[1], "ip_address")),
+                2,
+                3,
+                4,
+            ),
+            ("/info", count) if count >= 4 => (
+                Some(info_value(&values[0], "server_version")),
+                None,
+                1,
+                2,
+                3,
+            ),
+            ("/xinfo", _) => {
+                return Err(invalid_osc_data(
+                    "X AIR xinfo response did not contain all required fields",
+                ));
+            }
+            _ => {
+                return Err(invalid_osc_data(
+                    "X AIR info response did not contain all required fields",
+                ));
+            }
+        };
+
+    let name = info_value(&values[name_index], "device_name");
+    let model = info_value(&values[model_index], "device_model");
+    let firmware_version = info_value(&values[firmware_index], "device_version");
+    let ip_address = ip_address
+        .map(|value| {
+            value.parse().map_err(|_| {
+                invalid_osc_data("X AIR xinfo response contained an invalid IP address")
+            })
+        })
+        .transpose()?;
+
+    Ok(Some(MixerInfo {
+        name,
+        model,
+        firmware_version,
+        server_version,
+        ip_address,
+    }))
+}
+
+fn info_value(value: &str, field: &str) -> String {
+    value
+        .strip_prefix(&format!("{field}="))
+        .unwrap_or(value)
+        .to_owned()
 }
 
 fn read_osc_string(packet: &[u8], offset: &mut usize) -> io::Result<String> {

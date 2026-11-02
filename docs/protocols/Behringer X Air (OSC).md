@@ -12,3 +12,7 @@ Send UDP messages to `<mixer-IP>:10024`, as specified in the [official X AIR Mix
 | Set channel `n` fader to value `x` | `/ch/nn/mix/fader ,f x` |
 
 The set message uses the OSC float type tag `f`; the GET message has no arguments. The protocol document applies to firmware 1.11 or higher.
+
+## Mixer information
+
+Send `/xinfo ,` to request the mixer name, model, firmware version, server version, and IP address. The reply uses the `/xinfo` address and includes the device model, which can be used to select model-specific capabilities. The protocol also defines `/info`, whose reply omits the IP address.

@@ -2,7 +2,7 @@ use std::net::IpAddr;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mixerlib::{BehringerXAir, Mixer};
+use mixerlib::{BehringerXAir, Mixer, MixerInfo};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -29,6 +29,7 @@ enum MixerFamily {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Info,
     Fader(FaderArgs),
 }
 
@@ -76,6 +77,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn std::error::Error>> {
     match command {
+        Command::Info => print_info(mixer.info()?),
         Command::Fader(FaderArgs { channel, action }) => match action {
             FaderAction::Get => println!("{}", mixer.get_channel(channel)?),
             FaderAction::Set { value } => {
@@ -86,4 +88,16 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
     }
 
     Ok(())
+}
+
+fn print_info(info: MixerInfo) {
+    println!("Name: {}", info.name);
+    println!("Model: {}", info.model);
+    println!("Firmware: {}", info.firmware_version);
+    if let Some(server_version) = info.server_version {
+        println!("Server: {server_version}");
+    }
+    if let Some(ip_address) = info.ip_address {
+        println!("IP: {ip_address}");
+    }
 }
