@@ -1,0 +1,13 @@
+[package]
+name = "mixerlib"
+version = "0.1.0"
+edition = "2021"
+description = "A foundation for working with audio mixer protocols and custom mixing apps"
+readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "mixerlib"
+path = "src/main.rs"
