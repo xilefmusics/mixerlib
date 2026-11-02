@@ -52,6 +52,48 @@ pub trait Mixer {
         ))
     }
 
+    fn get_channel_count(&mut self) -> io::Result<u8> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel count is not supported",
+        ))
+    }
+
+    fn get_aux_count(&mut self) -> io::Result<u8> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Aux count is not supported",
+        ))
+    }
+
+    fn get_fx_count(&mut self) -> io::Result<u8> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "FX count is not supported",
+        ))
+    }
+
+    fn get_bus_count(&mut self) -> io::Result<u8> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "bus count is not supported",
+        ))
+    }
+
+    fn get_mute_group_count(&mut self) -> io::Result<u8> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "mute group count is not supported",
+        ))
+    }
+
+    fn get_dca_group_count(&mut self) -> io::Result<u8> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "DCA group count is not supported",
+        ))
+    }
+
     fn get_channel_label(&mut self, _channel: u8) -> io::Result<String> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,

@@ -1,6 +1,6 @@
 # mixerlib
 
-`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading channel meters, labels, preamp gain, fader level, mute, solo, pan, and bus/effect send levels and states; subscribing to meter samples and control changes; and setting these controls.
+`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading mixer inventory, channel meters, labels, preamp gain, fader level, mute, solo, pan, and bus/effect send levels and states; subscribing to meter samples and control changes; and setting these controls.
 
 The `mixinglib` command-line program reads channel meters and controls, subscribes to meter and control changes, and changes channel controls and sends.
 
@@ -11,6 +11,16 @@ cargo run -- -i <MIXER_IP> info
 ```
 
 The X AIR implementation requests `/xinfo` and prints the mixer name, model, firmware version, and IP address. It also prints the server version when the mixer provides it.
+
+The `Mixer` inventory methods return counts for channels, Aux inputs, FX returns, buses, mute groups, and DCA groups. The X AIR implementation reads the model from `/xinfo` on the first count request, then uses the model's configured counts:
+
+| Models | Channels | Aux | FX | Buses | Mute groups | DCA groups |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| XR12, MR12 | 16 | 1 | 4 | 6 | 4 | 4 |
+| XR16 | 16 | 1 | 4 | 6 | 4 | 4 |
+| XR18, X18, MR18 | 16 | 1 | 4 | 6 | 4 | 4 |
+
+The channel count is the number of `/ch` input strips exposed by the `Mixer` API; each supported model exposes 16. Aux counts the separate stereo Aux/USB return strip. The physical input totals differ by model. An unsupported model returns `io::ErrorKind::Unsupported` from the inventory methods.
 
 ## Getting started
 
@@ -158,6 +168,16 @@ Use the library API with a mixer implementation supplied by the caller:
 
 ```rust
 use mixerlib::{ChannelUpdate, Mixer};
+
+fn read_mixer_inventory(mixer: &mut impl Mixer) -> std::io::Result<()> {
+    println!("Channels: {}", mixer.get_channel_count()?);
+    println!("Aux: {}", mixer.get_aux_count()?);
+    println!("FX: {}", mixer.get_fx_count()?);
+    println!("Buses: {}", mixer.get_bus_count()?);
+    println!("Mute groups: {}", mixer.get_mute_group_count()?);
+    println!("DCA groups: {}", mixer.get_dca_group_count()?);
+    Ok(())
+}
 
 fn read_fader(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<f32> {
     mixer.get_channel(channel)

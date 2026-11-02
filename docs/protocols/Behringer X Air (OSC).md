@@ -44,6 +44,12 @@ The `BehringerXAir` implementation maps the public `Mixer` trait methods to thes
 | `Mixer` method | OSC request | Behavior |
 | --- | --- | --- |
 | `info()` | `/xinfo ,` | Returns `MixerInfo` with name, model, firmware version, and optional server version and IP address. |
+| `get_channel_count()` | `/xinfo ,` on the first count request | Returns the configured input-channel count for the reported model. |
+| `get_aux_count()` | `/xinfo ,` on the first count request | Returns the configured count of stereo Aux/USB return strips. |
+| `get_fx_count()` | `/xinfo ,` on the first count request | Returns the configured FX return count. |
+| `get_bus_count()` | `/xinfo ,` on the first count request | Returns the configured bus count. |
+| `get_mute_group_count()` | `/xinfo ,` on the first count request | Returns the configured mute group count. |
+| `get_dca_group_count()` | `/xinfo ,` on the first count request | Returns the configured DCA group count. |
 | `get_channel_label(channel)` | `/ch/nn/config/name ,` | Returns the channel label as a string. |
 | `set_channel_label(channel, label)` | `/ch/nn/config/name ,s <label>` | Sends the channel label as an OSC string. |
 | `get_channel_gain(channel)` | `/headamp/nn/gain ,` | Returns preamp gain in dB, rounded to 0.5 dB. |
@@ -117,3 +123,15 @@ The fader OSC float uses a piecewise dB taper. Decoding uses `40x - 30` for `x >
 ## Mixer information
 
 `info()` sends `/xinfo ,` to request mixer information. Its `/xinfo` reply provides the mixer name, model, and firmware version, and may also include the server version and IP address. The protocol also defines `/info`, whose reply omits the IP address; the implementation recognizes `/info` replies but does not send an `/info` request.
+
+## Mixer inventory
+
+The protocol does not provide a query for input-channel, Aux, FX-return, bus, mute-group, or DCA-group counts. The first `get_*_count()` call requests `/xinfo`, then the implementation selects the matching static configuration from the returned model and reuses it for later count calls. Supported models and their counts are:
+
+| Model | Channels | Aux | FX | Buses | Mute groups | DCA groups |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| XR12, MR12 | 16 | 1 | 4 | 6 | 4 | 4 |
+| XR16 | 16 | 1 | 4 | 6 | 4 | 4 |
+| XR18, X18, MR18 | 16 | 1 | 4 | 6 | 4 | 4 |
+
+The channel count is the number of `/ch` input strips exposed by the `Mixer` API; each supported model exposes 16. Aux counts the separate stereo Aux/USB return strip. Physical input totals differ by model. If `/xinfo` reports a model outside this list, count methods return `Unsupported`.

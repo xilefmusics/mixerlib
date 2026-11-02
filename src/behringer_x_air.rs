@@ -19,9 +19,39 @@ const CHANNEL_METER_ADDRESS: &str = "/meters/0";
 const AUX_FADER_ADDRESS: &str = "/rtn/aux/mix/fader";
 const MAIN_FADER_ADDRESS: &str = "/lr/mix/fader";
 
+#[derive(Clone, Copy, Debug)]
+struct XAirModelConfig {
+    channel_count: u8,
+    aux_count: u8,
+    fx_count: u8,
+    bus_count: u8,
+    mute_group_count: u8,
+    dca_group_count: u8,
+}
+
+impl XAirModelConfig {
+    fn for_model(model: &str) -> Option<Self> {
+        match model.trim().to_ascii_uppercase().as_str() {
+            "XR12" | "MR12" | "XR16" | "XR18" | "X18" | "MR18" => {}
+            _ => return None,
+        }
+
+        Some(Self {
+            channel_count: 16,
+            aux_count: 1,
+            fx_count: 4,
+            bus_count: 6,
+            mute_group_count: 4,
+            dca_group_count: 4,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct BehringerXAir {
     socket: UdpSocket,
+    model: Option<String>,
+    model_config: Option<XAirModelConfig>,
 }
 
 impl BehringerXAir {
@@ -39,7 +69,29 @@ impl BehringerXAir {
         socket.connect(mixer_addr)?;
         socket.set_read_timeout(Some(RESPONSE_TIMEOUT))?;
 
-        Ok(Self { socket })
+        Ok(Self {
+            socket,
+            model: None,
+            model_config: None,
+        })
+    }
+
+    fn model_config(&mut self) -> io::Result<XAirModelConfig> {
+        if let Some(config) = self.model_config {
+            return Ok(config);
+        }
+
+        if self.model.is_none() {
+            self.info()?;
+        }
+
+        let model = self.model.as_deref().unwrap_or("unknown");
+        self.model_config.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("mixer model `{model}` is not supported by the X AIR inventory"),
+            )
+        })
     }
 
     fn channel_address(channel: u8, parameter: &str) -> io::Result<String> {
@@ -392,7 +444,34 @@ impl BehringerXAir {
 impl Mixer for BehringerXAir {
     fn info(&mut self) -> io::Result<MixerInfo> {
         self.send_message("/xinfo", None)?;
-        self.receive_mixer_info()
+        let info = self.receive_mixer_info()?;
+        self.model_config = XAirModelConfig::for_model(&info.model);
+        self.model = Some(info.model.clone());
+        Ok(info)
+    }
+
+    fn get_channel_count(&mut self) -> io::Result<u8> {
+        Ok(self.model_config()?.channel_count)
+    }
+
+    fn get_aux_count(&mut self) -> io::Result<u8> {
+        Ok(self.model_config()?.aux_count)
+    }
+
+    fn get_fx_count(&mut self) -> io::Result<u8> {
+        Ok(self.model_config()?.fx_count)
+    }
+
+    fn get_bus_count(&mut self) -> io::Result<u8> {
+        Ok(self.model_config()?.bus_count)
+    }
+
+    fn get_mute_group_count(&mut self) -> io::Result<u8> {
+        Ok(self.model_config()?.mute_group_count)
+    }
+
+    fn get_dca_group_count(&mut self) -> io::Result<u8> {
+        Ok(self.model_config()?.dca_group_count)
     }
 
     fn subscribe_channel_meter(&mut self, channel: u8) -> io::Result<Box<dyn ChannelMeterStream>> {
