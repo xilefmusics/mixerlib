@@ -20,6 +20,20 @@ pub trait ChannelMeterStream {
     fn recv(&mut self) -> io::Result<ChannelMeter>;
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChannelUpdate {
+    Label(String),
+    Gain(f32),
+    Mute(bool),
+    Solo(bool),
+    Pan(f32),
+    Fader { value: f32, db: f32 },
+}
+
+pub trait ChannelUpdateStream {
+    fn recv(&mut self) -> io::Result<ChannelUpdate>;
+}
+
 pub trait Mixer {
     fn info(&mut self) -> io::Result<MixerInfo> {
         Err(io::Error::new(
@@ -107,6 +121,16 @@ pub trait Mixer {
 
     fn get_channel_meter(&mut self, channel: u8) -> io::Result<ChannelMeter> {
         self.subscribe_channel_meter(channel)?.recv()
+    }
+
+    fn subscribe_channel_updates(
+        &mut self,
+        _channel: u8,
+    ) -> io::Result<Box<dyn ChannelUpdateStream>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel updates are not supported",
+        ))
     }
 
     fn get_channel(&mut self, channel: u8) -> io::Result<f32>;

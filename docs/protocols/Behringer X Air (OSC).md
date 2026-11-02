@@ -20,6 +20,7 @@ Send UDP messages to `<mixer-IP>:10024`, as specified in the [official X AIR Mix
 | Set channel `n` solo state to `x` | `/-stat/solosw/nn ,i x` |
 | GET channel `n` pan | `/ch/nn/mix/pan ,` (no arguments) |
 | Set channel `n` pan to value `x` | `/ch/nn/mix/pan ,f x` |
+| Subscribe to parameter changes | `/xremote ,` (no arguments) |
 | Subscribe to channel `n` meters | `/meters ,si "/meters/0" <n - 1>` |
 
 The channel label is an OSC string. GET messages have no arguments; label set messages use the OSC string type tag `s`, fader, gain, and pan set messages use the float type tag `f`, and mute and solo set messages use the integer type tag `i`. Gain is sent as a normalized float from `0.0` to `1.0`, corresponding to -12 dB through +60 dB. Pan uses `0.0` for left, `0.5` for center, and `1.0` for right. The protocol document applies to firmware 1.11 or higher.
@@ -41,6 +42,7 @@ The `BehringerXAir` implementation maps the public `Mixer` trait methods to thes
 | `set_channel_solo(channel, solo)` | `/-stat/solosw/nn ,i <value>` | Sends `1` when solo is enabled and `0` when disabled. |
 | `get_channel_pan(channel)` | `/ch/nn/mix/pan ,` | Returns normalized pan from `0.0` (left) to `1.0` (right). |
 | `set_channel_pan(channel, value)` | `/ch/nn/mix/pan ,f <value>` | Sets normalized pan; `value` must be finite and from `0.0` to `1.0`. |
+| `subscribe_channel_updates(channel)` | `/xremote ,` | Returns pushed changes for the channel label, preamp gain, mute, solo, pan, and fader. Fader updates include normalized and dB values. |
 | `subscribe_channel_meter(channel)` | `/meters ,si "/meters/0" <channel - 1>` | Opens a meter subscription and returns a stream of pre- and post-fader L/R levels in dBFS. |
 | `get_channel_meter(channel)` | `/meters ,si "/meters/0" <channel - 1>` | Returns the first sample from a channel meter subscription. |
 | `get_channel(channel)` | `/ch/nn/mix/fader ,` | Returns the normalized fader value from `0.0` to `1.0`. |
@@ -55,6 +57,12 @@ The implementation accepts channel numbers from `1` to `16` and formats them as 
 Meter reads use a dedicated UDP socket. The client sends `/meters ,si "/meters/0" <channel - 1>` to subscribe to one channel; the mixer sends repeated `/meters/0` messages containing an OSC blob. The blob contains a little-endian 32-bit value count followed by eight little-endian signed 16-bit values, each representing dBFS in units of 1/256 dB. The values are pre-fader L/R, gate gain reduction, compressor gain reduction, post-fader L/R, gate key, and compressor key. The library returns the pre- and post-fader pairs as `ChannelMeter` values.
 
 The stream resends its subscription every five seconds while it is being read. `ChannelMeterStream::recv()` waits for the next update and uses the library’s one-second response timeout. Dropping the stream closes its socket. `get_channel_meter()` subscribes, reads one sample, and then drops the stream.
+
+## Channel control subscriptions
+
+`subscribe_channel_updates(channel)` uses a separate UDP socket and sends `/xremote ,` to receive pushed parameter changes. The mixer sends changes for all parameters to that socket, and the library filters the updates to the requested channel. It decodes label, gain, mute, solo, pan, and fader changes into `ChannelUpdate` values. Gain updates use the same dB conversion and 0.5 dB rounding as `get_channel_gain()`. Mute updates invert the OSC `on` value. Fader updates include both the normalized value and its dB conversion.
+
+The stream reports changes received after it is opened; it does not provide an initial channel snapshot. Use the corresponding GET methods to read the starting state. The subscription is renewed every five seconds while `ChannelUpdateStream::recv()` is being called. A receive with no matching change uses the library’s one-second timeout. Dropping the stream stops renewals, and the mixer expires the subscription after ten seconds. The protocol allows up to eight active `/xremote` clients.
 
 The fader OSC float uses a piecewise dB taper. Decoding uses `40x - 30` for `x >= 0.5`, `80x - 50` for `x >= 0.25`, `160x - 70` for `x >= 0.0625`, and `480x - 90` below that, rounded to 0.1 dB. Values at or above `1.0` decode to `+10 dB`; values below `0.0` decode to the `-90 dB` floor. Encoding uses the inverse segments, with values below `-90 dB` mapped to `0.0` and values above `+10 dB` mapped to `1.0`.
 

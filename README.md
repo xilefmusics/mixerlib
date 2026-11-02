@@ -1,8 +1,8 @@
 # mixerlib
 
-`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading channel meters, labels, preamp gain, fader level, mute, solo, and pan, and for setting channel labels, preamp gain, fader level, mute, solo, and pan, with a network-connected mixer implementation.
+`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading channel meters, labels, preamp gain, fader level, mute, solo, and pan; subscribing to meter samples and channel control changes; and setting channel labels, preamp gain, fader level, mute, solo, and pan.
 
-The `mixinglib` command-line program reads channel meters and controls, and changes channel controls.
+The `mixinglib` command-line program reads channel meters and controls, subscribes to meter and control changes, and changes channel controls.
 
 Request mixer information:
 
@@ -44,6 +44,12 @@ Subscribe to the channel meter and print one line per sample. Stop the stream wi
 
 ```sh
 cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> subscribe meter
+```
+
+Subscribe to channel control changes and print each updated value. This reports label, gain, fader, mute, solo, and pan changes. Stop the stream with Ctrl-C:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> subscribe controls
 ```
 
 Read a channel label:
@@ -104,7 +110,7 @@ The GET command prints the requested channel value, state, or label. After build
 Use the library API with a mixer implementation supplied by the caller:
 
 ```rust
-use mixerlib::Mixer;
+use mixerlib::{ChannelUpdate, Mixer};
 
 fn read_fader(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<f32> {
     mixer.get_channel(channel)
@@ -163,6 +169,14 @@ fn stream_meter(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<()> {
     loop {
         let meter = stream.recv()?;
         println!("pre: {:?}, post: {:?}", meter.pre_fader_dbfs, meter.post_fader_dbfs);
+    }
+}
+
+fn stream_channel_updates(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<()> {
+    let mut stream = mixer.subscribe_channel_updates(channel)?;
+    loop {
+        let update: ChannelUpdate = stream.recv()?;
+        println!("{update:?}");
     }
 }
 ```

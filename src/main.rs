@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mixerlib::{BehringerXAir, ChannelMeter, Mixer, MixerInfo};
+use mixerlib::{BehringerXAir, ChannelMeter, ChannelUpdate, Mixer, MixerInfo};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -100,6 +100,7 @@ enum ChannelGetField {
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ChannelSubscribeField {
+    Controls,
     Meter,
 }
 
@@ -201,6 +202,29 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
                 }
             },
             ChannelAction::Subscribe { field } => match field {
+                ChannelSubscribeField::Controls => {
+                    let mut stream = mixer.subscribe_channel_updates(channel)?;
+                    let stdout = io::stdout();
+                    let mut output = stdout.lock();
+                    loop {
+                        match stream.recv() {
+                            Ok(update) => {
+                                writeln!(
+                                    output,
+                                    "{}",
+                                    format_channel_update_line(channel, update)
+                                )?;
+                                output.flush()?;
+                            }
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                                ) => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                }
                 ChannelSubscribeField::Meter => {
                     let mut stream = mixer.subscribe_channel_meter(channel)?;
                     let stdout = io::stdout();
@@ -277,6 +301,19 @@ fn format_channel_meter_line(channel: u8, meter: ChannelMeter) -> String {
         meter.post_fader_dbfs[0],
         meter.post_fader_dbfs[1]
     )
+}
+
+fn format_channel_update_line(channel: u8, update: ChannelUpdate) -> String {
+    match update {
+        ChannelUpdate::Label(value) => format!("channel {channel} | label: {value}"),
+        ChannelUpdate::Gain(value) => format!("channel {channel} | gain: {value:.1} dB"),
+        ChannelUpdate::Mute(value) => format!("channel {channel} | mute: {value}"),
+        ChannelUpdate::Solo(value) => format!("channel {channel} | solo: {value}"),
+        ChannelUpdate::Pan(value) => format!("channel {channel} | pan: {value:.3}"),
+        ChannelUpdate::Fader { value, db } => {
+            format!("channel {channel} | fader: {value:.3} ({db:.1} dB)")
+        }
+    }
 }
 
 #[cfg(test)]

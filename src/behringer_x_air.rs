@@ -2,13 +2,16 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
-use crate::{ChannelMeter, ChannelMeterStream, Mixer, MixerInfo};
+use crate::{
+    ChannelMeter, ChannelMeterStream, ChannelUpdate, ChannelUpdateStream, Mixer, MixerInfo,
+};
 
 const X_AIR_OSC_PORT: u16 = 10024;
 const MAX_INPUT_CHANNEL: u8 = 16;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_PACKET_SIZE: usize = 4096;
 const METER_SUBSCRIPTION_RENEW_INTERVAL: Duration = Duration::from_secs(5);
+const PARAMETER_SUBSCRIPTION_RENEW_INTERVAL: Duration = Duration::from_secs(5);
 const CHANNEL_METER_ADDRESS: &str = "/meters/0";
 
 #[derive(Debug)]
@@ -285,6 +288,34 @@ impl Mixer for BehringerXAir {
         }))
     }
 
+    fn subscribe_channel_updates(
+        &mut self,
+        channel: u8,
+    ) -> io::Result<Box<dyn ChannelUpdateStream>> {
+        if !(1..=MAX_INPUT_CHANNEL).contains(&channel) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("channel must be between 1 and {MAX_INPUT_CHANNEL}"),
+            ));
+        }
+
+        let peer_addr = self.socket.peer_addr()?;
+        let bind_addr = match peer_addr.ip() {
+            IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        };
+        let socket = UdpSocket::bind(bind_addr)?;
+        socket.connect(peer_addr)?;
+        socket.set_read_timeout(Some(RESPONSE_TIMEOUT))?;
+        send_parameter_subscription(&socket)?;
+
+        Ok(Box::new(BehringerXAirChannelUpdateStream {
+            socket,
+            channel,
+            last_subscription: Instant::now(),
+        }))
+    }
+
     fn get_channel_label(&mut self, channel: u8) -> io::Result<String> {
         let address = Self::channel_address(channel, "config/name")?;
         self.send_message(&address, None)?;
@@ -399,6 +430,53 @@ struct BehringerXAirChannelMeterStream {
     last_subscription: Instant,
 }
 
+struct BehringerXAirChannelUpdateStream {
+    socket: UdpSocket,
+    channel: u8,
+    last_subscription: Instant,
+}
+
+impl ChannelUpdateStream for BehringerXAirChannelUpdateStream {
+    fn recv(&mut self) -> io::Result<ChannelUpdate> {
+        if self.last_subscription.elapsed() >= PARAMETER_SUBSCRIPTION_RENEW_INTERVAL {
+            send_parameter_subscription(&self.socket)?;
+            self.last_subscription = Instant::now();
+        }
+
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
+        let mut packet = [0_u8; MAX_PACKET_SIZE];
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timed out waiting for X AIR channel update",
+                ));
+            }
+            self.socket.set_read_timeout(Some(remaining))?;
+
+            match self.socket.recv(&mut packet) {
+                Ok(packet_len) => {
+                    if let Some(update) = parse_channel_update(&packet[..packet_len], self.channel)?
+                    {
+                        return Ok(update);
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
 impl ChannelMeterStream for BehringerXAirChannelMeterStream {
     fn recv(&mut self) -> io::Result<ChannelMeter> {
         if self.last_subscription.elapsed() >= METER_SUBSCRIPTION_RENEW_INTERVAL {
@@ -441,6 +519,14 @@ impl ChannelMeterStream for BehringerXAirChannelMeterStream {
 
 fn send_meter_subscription(socket: &UdpSocket, channel_id: u8) -> io::Result<()> {
     socket.send(&build_meter_subscription_packet(channel_id))?;
+    Ok(())
+}
+
+fn send_parameter_subscription(socket: &UdpSocket) -> io::Result<()> {
+    let mut packet = Vec::new();
+    append_osc_string(&mut packet, "/xremote");
+    append_osc_string(&mut packet, ",");
+    socket.send(&packet)?;
     Ok(())
 }
 
@@ -583,6 +669,103 @@ fn parse_float_response(packet: &[u8], expected_path: &str) -> io::Result<Option
                 "X AIR fader response did not contain a float value",
             ));
         }
+    }
+
+    Ok(None)
+}
+
+fn parse_channel_update(packet: &[u8], channel: u8) -> io::Result<Option<ChannelUpdate>> {
+    let mut offset = 0;
+    let address = read_osc_string(packet, &mut offset)?;
+    let arguments = read_parameter_arguments(packet, &mut offset)?;
+
+    if address == "/status" {
+        for pair in arguments.windows(2) {
+            if let OscArgument::String(path) = &pair[1] {
+                if let Some(update) =
+                    channel_update_for_path(path, std::slice::from_ref(&pair[0]), channel)?
+                {
+                    return Ok(Some(update));
+                }
+            }
+        }
+        return Ok(None);
+    }
+
+    channel_update_for_path(&address, &arguments, channel)
+}
+
+fn channel_update_for_path(
+    path: &str,
+    arguments: &[OscArgument],
+    channel: u8,
+) -> io::Result<Option<ChannelUpdate>> {
+    let channel_number = format!("{channel:02}");
+    let label_path = format!("/ch/{channel_number}/config/name");
+    let gain_path = format!("/headamp/{channel_number}/gain");
+    let mute_path = format!("/ch/{channel_number}/mix/on");
+    let solo_path = format!("/-stat/solosw/{channel_number}");
+    let pan_path = format!("/ch/{channel_number}/mix/pan");
+    let fader_path = format!("/ch/{channel_number}/mix/fader");
+
+    if path == label_path {
+        return match arguments.first() {
+            Some(OscArgument::String(value)) => Ok(Some(ChannelUpdate::Label(value.clone()))),
+            Some(_) => Err(invalid_osc_data(
+                "X AIR channel label update did not contain a string value",
+            )),
+            None => Ok(None),
+        };
+    }
+
+    if path == gain_path {
+        return match arguments.first() {
+            Some(OscArgument::Float(value)) => {
+                let gain = (*value * 72.0 - 12.0) * 2.0;
+                Ok(Some(ChannelUpdate::Gain(gain.round() / 2.0)))
+            }
+            Some(_) => Err(invalid_osc_data(
+                "X AIR channel gain update did not contain a float value",
+            )),
+            None => Ok(None),
+        };
+    }
+
+    if path == mute_path {
+        return match arguments.first() {
+            Some(value) => bool_argument_ref(value).map(|on| Some(ChannelUpdate::Mute(!on))),
+            None => Ok(None),
+        };
+    }
+
+    if path == solo_path {
+        return match arguments.first() {
+            Some(value) => bool_argument_ref(value).map(|solo| Some(ChannelUpdate::Solo(solo))),
+            None => Ok(None),
+        };
+    }
+
+    if path == pan_path {
+        return match arguments.first() {
+            Some(OscArgument::Float(value)) => Ok(Some(ChannelUpdate::Pan(*value))),
+            Some(_) => Err(invalid_osc_data(
+                "X AIR channel pan update did not contain a float value",
+            )),
+            None => Ok(None),
+        };
+    }
+
+    if path == fader_path {
+        return match arguments.first() {
+            Some(OscArgument::Float(value)) => Ok(Some(ChannelUpdate::Fader {
+                value: *value,
+                db: fader_to_db(*value),
+            })),
+            Some(_) => Err(invalid_osc_data(
+                "X AIR channel fader update did not contain a float value",
+            )),
+            None => Ok(None),
+        };
     }
 
     Ok(None)
