@@ -4,10 +4,10 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mixerlib::{
-    BehringerX32, BehringerXAir, ChannelMeter, ChannelUpdate, FxType, MeterSample, MeterStreamId,
-    Mixer, MixerInfo, MixerSendDestination, MixerSendSource, MixerStatus, OutputPosition,
-    ParameterUpdate, ParameterValue, RoutingOutput, RoutingSource, SendTap, SendUpdate,
-    TypedMeterSample,
+    BehringerWing, BehringerX32, BehringerXAir, ChannelMeter, ChannelUpdate, FxType, MeterSample,
+    MeterStreamId, Mixer, MixerInfo, MixerSendDestination, MixerSendSource, MixerStatus,
+    OutputPosition, ParameterUpdate, ParameterValue, RoutingOutput, RoutingSource, SendTap,
+    SendUpdate, TypedMeterSample,
 };
 
 #[derive(Debug, Parser)]
@@ -29,6 +29,8 @@ struct Cli {
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum MixerFamily {
+    #[value(name = "wing")]
+    BehringerWing,
     #[default]
     #[value(name = "xair")]
     BehringerXAir,
@@ -881,6 +883,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } = cli;
 
     match mixer_family {
+        MixerFamily::BehringerWing => {
+            let mut mixer = BehringerWing::new(ip)?;
+            run_command(&mut mixer, command)?;
+        }
         MixerFamily::BehringerXAir => {
             let mut mixer = BehringerXAir::new(ip)?;
             run_command(&mut mixer, command)?;

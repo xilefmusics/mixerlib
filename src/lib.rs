@@ -1,7 +1,9 @@
+mod behringer_wing;
 mod behringer_x32;
 mod behringer_x_air;
 mod mixer;
 
+pub use behringer_wing::BehringerWing;
 pub use behringer_x32::BehringerX32;
 pub use behringer_x_air::BehringerXAir;
 pub use mixer::{

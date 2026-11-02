@@ -15,9 +15,9 @@ The tables list major digital mixer lines. A blank protocol cell means no genera
 | [X AIR XR18](https://cdn-media.empowertribe.com/ffe0de45e14541f797928d639a8933b2/M_BE_0605-AAA_X-AIR_EN.pdf) | [Behringer X Air (OSC)](protocols/Behringer%20X%20Air%20%28OSC%29.md) |
 | [X AIR XR16](https://cdn-media.empowertribe.com/ffe0de45e14541f797928d639a8933b2/M_BE_0605-AAA_X-AIR_EN.pdf) | [Behringer X Air (OSC)](protocols/Behringer%20X%20Air%20%28OSC%29.md) |
 | [X AIR XR12](https://cdn-media.empowertribe.com/ffe0de45e14541f797928d639a8933b2/M_BE_0605-AAA_X-AIR_EN.pdf) | [Behringer X Air (OSC)](protocols/Behringer%20X%20Air%20%28OSC%29.md) |
-| [WING](https://cdn-media.empowertribe.com/25951c6f808c0a79abc407c07d5639d1/User-Manual_WING-series_2025-10-20.pdf) | OSC |
-| [WING COMPACT](https://cdn-media.empowertribe.com/25951c6f808c0a79abc407c07d5639d1/User-Manual_WING-series_2025-10-20.pdf) | OSC |
-| [WING RACK](https://cdn-media.empowertribe.com/25951c6f808c0a79abc407c07d5639d1/User-Manual_WING-series_2025-10-20.pdf) | OSC |
+| [WING](https://cdn-media.empowertribe.com/25951c6f808c0a79abc407c07d5639d1/User-Manual_WING-series_2025-10-20.pdf) | [Behringer WING (OSC)](protocols/Behringer%20WING%20%28OSC%29.md) |
+| [WING COMPACT](https://cdn-media.empowertribe.com/25951c6f808c0a79abc407c07d5639d1/User-Manual_WING-series_2025-10-20.pdf) | [Behringer WING (OSC)](protocols/Behringer%20WING%20%28OSC%29.md) |
+| [WING RACK](https://cdn-media.empowertribe.com/25951c6f808c0a79abc407c07d5639d1/User-Manual_WING-series_2025-10-20.pdf) | [Behringer WING (OSC)](protocols/Behringer%20WING%20%28OSC%29.md) |
 | [FLOW 8](https://cdn-media.empowertribe.com/d1517b2a8e7d4a2ab05f823c306facc8/QSG_BE_0603-AEW_FLOW-8_WW.pdf) | |
 
 ## Allen & Heath

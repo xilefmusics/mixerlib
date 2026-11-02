@@ -1,8 +1,8 @@
 # mixerlib
 
-`mixerlib` is a Rust library for working with audio mixers. Its `Mixer` trait exposes typed OSC controls for the Behringer X AIR/M AIR and X32 families, including channel processing, faders, buses, sends, strip groups, and automix. `BehringerXAir` supports XR12, MR12, XR16, XR18, X18, and MR18 running firmware 1.11 or newer. `BehringerX32` supports the X32 OSC control families implemented in [its protocol guide](docs/protocols/Behringer%20X32%20%28OSC%29.md); unmapped controls return `Unsupported`.
+`mixerlib` is a Rust library for working with audio mixers. Its `Mixer` trait exposes typed OSC controls for the Behringer WING, X AIR/M AIR, and X32 families, including channel processing, faders, buses, sends, strip groups, and automix. `BehringerXAir` supports XR12, MR12, XR16, XR18, X18, and MR18 running firmware 1.11 or newer. `BehringerX32` supports the X32 OSC control families implemented in [its protocol guide](docs/protocols/Behringer%20X32%20%28OSC%29.md), and `BehringerWing` supports the WING OSC mappings in [its protocol guide](docs/protocols/Behringer%20WING%20%28OSC%29.md). Unmapped controls return `Unsupported`.
 
-The `mixinglib` command-line program reads and changes supported X AIR and X32 OSC controls. X AIR also supports the extended routing, settings, snapshots, and meter commands described below.
+The `mixinglib` command-line program reads and changes supported WING, X AIR, and X32 OSC controls. X AIR also supports the extended routing, settings, snapshots, and meter commands described below.
 
 Request mixer information:
 
@@ -36,9 +36,19 @@ Build the project and CLI:
 cargo build
 ```
 
-The `-m` (`--mixer-family`) option accepts `xair` and `x32`; it defaults to `xair`. Use `-i` or `--ip` to provide the mixer address.
+The `-m` (`--mixer-family`) option accepts `wing`, `xair`, and `x32`; it defaults to `xair`. Use `-i` or `--ip` to provide the mixer address.
 
-X AIR uses OSC over UDP on port 10024. X32 uses OSC over UDP on port 10023. USB audio data streaming and MIDI transport are outside this OSC library.
+WING uses OSC over UDP on port 2223. X AIR uses OSC over UDP on port 10024. X32 uses OSC over UDP on port 10023. USB audio data streaming and MIDI transport are outside this OSC library.
+
+Control a WING channel fader, a bus, or Main 1 with the shared commands:
+
+```sh
+cargo run -- -m wing -i <MIXER_IP> ch 1 get
+cargo run -- -m wing -i <MIXER_IP> ch 1 set -6db
+cargo run -- -m wing -i <MIXER_IP> bus 1 set mute on
+```
+
+`BehringerWing` supports information, inventory counts, channel and bus labels, channel/bus/Main 1/DCA faders and mute, channel and bus pan/solo where available, channel-to-bus sends, and parameter update subscriptions. WING has eight Aux input strips, eight matrix buses, and four Main buses; the shared interface does not model those targets individually. Use `BehringerWing::get_parameter` and `BehringerWing::set_parameter` for typed scalar access to WING OSC addresses outside the shared mappings. Status, meter, and other unmapped controls return `Unsupported`.
 
 Control an X32 channel fader or a mix bus with the shared commands:
 
