@@ -28,7 +28,7 @@ impl BehringerXAir {
         Ok(Self { socket })
     }
 
-    fn channel_address(channel: u8) -> io::Result<String> {
+    fn channel_address(channel: u8, parameter: &str) -> io::Result<String> {
         if !(1..=MAX_INPUT_CHANNEL).contains(&channel) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -36,7 +36,7 @@ impl BehringerXAir {
             ));
         }
 
-        Ok(format!("/ch/{channel:02}/mix/fader"))
+        Ok(format!("/ch/{channel:02}/{parameter}"))
     }
 
     fn send_message(&self, address: &str, value: Option<f32>) -> io::Result<()> {
@@ -50,6 +50,23 @@ impl BehringerXAir {
             }
             None => append_osc_string(&mut packet, ","),
         }
+
+        self.socket.send(&packet)?;
+        Ok(())
+    }
+
+    fn send_string_message(&self, address: &str, value: &str) -> io::Result<()> {
+        if value.contains('\0') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR channel label cannot contain a null character",
+            ));
+        }
+
+        let mut packet = Vec::with_capacity(16 + address.len() + value.len());
+        append_osc_string(&mut packet, address);
+        append_osc_string(&mut packet, ",s");
+        append_osc_string(&mut packet, value);
 
         self.socket.send(&packet)?;
         Ok(())
@@ -74,6 +91,41 @@ impl BehringerXAir {
                     if let Some(value) = parse_fader_response(&packet[..packet_len], expected_path)?
                     {
                         return Ok(value);
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn receive_channel_label(&self, expected_path: &str) -> io::Result<String> {
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
+        let mut packet = [0_u8; MAX_PACKET_SIZE];
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timed out waiting for X AIR OSC response",
+                ));
+            }
+            self.socket.set_read_timeout(Some(remaining))?;
+
+            match self.socket.recv(&mut packet) {
+                Ok(packet_len) => {
+                    if let Some(label) =
+                        parse_channel_label_response(&packet[..packet_len], expected_path)?
+                    {
+                        return Ok(label);
                     }
                 }
                 Err(error)
@@ -129,8 +181,19 @@ impl Mixer for BehringerXAir {
         self.receive_mixer_info()
     }
 
+    fn get_channel_label(&mut self, channel: u8) -> io::Result<String> {
+        let address = Self::channel_address(channel, "config/name")?;
+        self.send_message(&address, None)?;
+        self.receive_channel_label(&address)
+    }
+
+    fn set_channel_label(&mut self, channel: u8, label: &str) -> io::Result<()> {
+        let address = Self::channel_address(channel, "config/name")?;
+        self.send_string_message(&address, label)
+    }
+
     fn get_channel(&mut self, channel: u8) -> io::Result<f32> {
-        let address = Self::channel_address(channel)?;
+        let address = Self::channel_address(channel, "mix/fader")?;
         self.send_message(&address, None)?;
         self.receive_fader_value(&address)
     }
@@ -143,7 +206,7 @@ impl Mixer for BehringerXAir {
             ));
         }
 
-        let address = Self::channel_address(channel)?;
+        let address = Self::channel_address(channel, "mix/fader")?;
         self.send_message(&address, Some(value))?;
         Ok(())
     }
@@ -213,14 +276,8 @@ enum OscArgument {
     Other,
 }
 
-fn parse_fader_response(packet: &[u8], expected_path: &str) -> io::Result<Option<f32>> {
-    let mut offset = 0;
-    let address = read_osc_string(packet, &mut offset)?;
-    if address != "/status" && address != expected_path {
-        return Ok(None);
-    }
-
-    let type_tags = read_osc_string(packet, &mut offset)?;
+fn read_parameter_arguments(packet: &[u8], offset: &mut usize) -> io::Result<Vec<OscArgument>> {
+    let type_tags = read_osc_string(packet, offset)?;
     let Some(type_tags) = type_tags.strip_prefix(',') else {
         return Err(invalid_osc_data(
             "OSC response is missing its type-tag prefix",
@@ -230,24 +287,24 @@ fn parse_fader_response(packet: &[u8], expected_path: &str) -> io::Result<Option
     let mut arguments = Vec::new();
     for type_tag in type_tags.chars() {
         let argument = match type_tag {
-            's' | 'S' => OscArgument::String(read_osc_string(packet, &mut offset)?),
+            's' | 'S' => OscArgument::String(read_osc_string(packet, offset)?),
             'f' => {
-                let bytes = read_bytes(packet, &mut offset, 4)?;
+                let bytes = read_bytes(packet, offset, 4)?;
                 OscArgument::Float(f32::from_be_bytes(bytes.try_into().unwrap()))
             }
             'i' | 'c' | 'r' | 'm' => {
-                read_bytes(packet, &mut offset, 4)?;
+                read_bytes(packet, offset, 4)?;
                 OscArgument::Other
             }
             'h' | 't' | 'd' => {
-                read_bytes(packet, &mut offset, 8)?;
+                read_bytes(packet, offset, 8)?;
                 OscArgument::Other
             }
             'b' => {
-                let length = read_bytes(packet, &mut offset, 4)?;
+                let length = read_bytes(packet, offset, 4)?;
                 let length = u32::from_be_bytes(length.try_into().unwrap()) as usize;
                 let padded_length = (length + 3) & !3;
-                read_bytes(packet, &mut offset, padded_length)?;
+                read_bytes(packet, offset, padded_length)?;
                 OscArgument::Other
             }
             'T' | 'F' | 'N' | 'I' | '[' | ']' => OscArgument::Other,
@@ -259,6 +316,18 @@ fn parse_fader_response(packet: &[u8], expected_path: &str) -> io::Result<Option
         };
         arguments.push(argument);
     }
+
+    Ok(arguments)
+}
+
+fn parse_fader_response(packet: &[u8], expected_path: &str) -> io::Result<Option<f32>> {
+    let mut offset = 0;
+    let address = read_osc_string(packet, &mut offset)?;
+    if address != "/status" && address != expected_path {
+        return Ok(None);
+    }
+
+    let arguments = read_parameter_arguments(packet, &mut offset)?;
 
     if address == expected_path {
         return Ok(arguments.into_iter().find_map(|argument| match argument {
@@ -274,6 +343,35 @@ fn parse_fader_response(packet: &[u8], expected_path: &str) -> io::Result<Option
             }
             return Err(invalid_osc_data(
                 "X AIR fader response did not contain a float value",
+            ));
+        }
+    }
+
+    Ok(None)
+}
+
+fn parse_channel_label_response(packet: &[u8], expected_path: &str) -> io::Result<Option<String>> {
+    let mut offset = 0;
+    let address = read_osc_string(packet, &mut offset)?;
+    if address != "/status" && address != expected_path {
+        return Ok(None);
+    }
+
+    let arguments = read_parameter_arguments(packet, &mut offset)?;
+    if address == expected_path {
+        return Ok(arguments.into_iter().find_map(|argument| match argument {
+            OscArgument::String(value) => Some(value),
+            _ => None,
+        }));
+    }
+
+    for pair in arguments.windows(2) {
+        if matches!(&pair[1], OscArgument::String(path) if path == expected_path) {
+            if let OscArgument::String(value) = &pair[0] {
+                return Ok(Some(value.clone()));
+            }
+            return Err(invalid_osc_data(
+                "X AIR channel label response did not contain a string value",
             ));
         }
     }

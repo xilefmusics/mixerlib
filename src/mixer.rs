@@ -18,6 +18,20 @@ pub trait Mixer {
         ))
     }
 
+    fn get_channel_label(&mut self, _channel: u8) -> io::Result<String> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel labels are not supported",
+        ))
+    }
+
+    fn set_channel_label(&mut self, _channel: u8, _label: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting channel labels is not supported",
+        ))
+    }
+
     fn get_channel(&mut self, channel: u8) -> io::Result<f32>;
 
     fn set_channel(&mut self, channel: u8, value: f32) -> io::Result<()>;

@@ -8,10 +8,12 @@ Send UDP messages to `<mixer-IP>:10024`, as specified in the [official X AIR Mix
 
 | Operation | OSC message |
 | --- | --- |
+| GET channel `n` label | `/ch/nn/config/name ,` (no arguments) |
+| Set channel `n` label to `name` | `/ch/nn/config/name ,s name` |
 | GET channel `n` fader | `/ch/nn/mix/fader ,` (no arguments) |
 | Set channel `n` fader to value `x` | `/ch/nn/mix/fader ,f x` |
 
-The set message uses the OSC float type tag `f`; the GET message has no arguments. The protocol document applies to firmware 1.11 or higher.
+The channel label is an OSC string. GET messages have no arguments; label set messages use the OSC string type tag `s`, and fader set messages use the float type tag `f`. The protocol document applies to firmware 1.11 or higher.
 
 The fader OSC float uses a piecewise dB taper. Decoding uses `40x - 30` for `x >= 0.5`, `80x - 50` for `x >= 0.25`, `160x - 70` for `x >= 0.0625`, and `480x - 90` below that, rounded to 0.1 dB. Values at or above `1.0` decode to `+10 dB`; values below `0.0` decode to the `-90 dB` floor. Encoding uses the inverse segments, with values below `-90 dB` mapped to `0.0` and values above `+10 dB` mapped to `1.0`.
 

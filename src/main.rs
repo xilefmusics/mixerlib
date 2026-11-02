@@ -1,3 +1,4 @@
+use std::io;
 use std::net::IpAddr;
 use std::process::ExitCode;
 
@@ -46,18 +47,30 @@ struct ChannelArgs {
 enum ChannelAction {
     Get {
         #[arg(value_enum)]
-        unit: Option<ChannelUnit>,
+        field: Option<ChannelGetField>,
     },
-    Set {
-        #[arg(allow_hyphen_values = true)]
-        value: String,
-    },
+    Set(ChannelSetArgs),
+}
+
+#[derive(Debug, Args)]
+struct ChannelSetArgs {
+    #[command(subcommand)]
+    action: Option<ChannelSetAction>,
+
+    #[arg(allow_hyphen_values = true)]
+    value: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum ChannelSetAction {
+    Label { label: String },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
-enum ChannelUnit {
+enum ChannelGetField {
     #[value(name = "db")]
     Db,
+    Label,
 }
 
 fn main() -> ExitCode {
@@ -92,22 +105,43 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
     match command {
         Command::Info => print_info(mixer.info()?),
         Command::Ch(ChannelArgs { channel, action }) => match action {
-            ChannelAction::Get { unit } => match unit {
-                Some(ChannelUnit::Db) => {
+            ChannelAction::Get { field } => match field {
+                Some(ChannelGetField::Db) => {
                     println!("{} dB", mixer.get_channel_db(channel)?);
                 }
+                Some(ChannelGetField::Label) => println!("{}", mixer.get_channel_label(channel)?),
                 None => println!("{}", mixer.get_channel(channel)?),
             },
-            ChannelAction::Set { value } => {
-                if value.to_ascii_lowercase().ends_with("db") {
-                    let decibels = value[..value.len() - 2].parse::<f32>()?;
-                    mixer.set_channel_db(channel, decibels)?;
-                } else {
-                    let value = value.parse::<f32>()?;
-                    mixer.set_channel(channel, value)?;
+            ChannelAction::Set(args) => match (args.action, args.value) {
+                (Some(ChannelSetAction::Label { label }), None) => {
+                    mixer.set_channel_label(channel, &label)?;
+                    println!("ok");
                 }
-                println!("ok");
-            }
+                (None, Some(value)) => {
+                    if value.to_ascii_lowercase().ends_with("db") {
+                        let decibels = value[..value.len() - 2].parse::<f32>()?;
+                        mixer.set_channel_db(channel, decibels)?;
+                    } else {
+                        let value = value.parse::<f32>()?;
+                        mixer.set_channel(channel, value)?;
+                    }
+                    println!("ok");
+                }
+                (Some(ChannelSetAction::Label { .. }), Some(_)) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "unexpected fader value after channel label",
+                    )
+                    .into());
+                }
+                (None, None) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "expected a fader value or `label <LABEL>`",
+                    )
+                    .into());
+                }
+            },
         },
     }
 

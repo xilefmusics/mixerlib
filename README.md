@@ -1,8 +1,8 @@
 # mixerlib
 
-`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading and setting channel fader values, with a network-connected mixer implementation.
+`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading channel labels and fader values and setting channel labels and fader values, with a network-connected mixer implementation.
 
-The `mixinglib` command-line program reads and changes mixer faders.
+The `mixinglib` command-line program reads and changes channel labels and faders.
 
 Request mixer information:
 
@@ -34,6 +34,12 @@ Append `db` to read the channel fader in decibels:
 cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> get db
 ```
 
+Read a channel label:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> get label
+```
+
 To set a fader, provide its value:
 
 ```sh
@@ -46,9 +52,15 @@ Set a channel fader in decibels:
 cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> set -6db
 ```
 
+Set a channel label:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> set label "Lead Vocals"
+```
+
 The `set` command accepts a normalized `0.0` to `1.0` value or a dB value with a `db` suffix. dB values use the X AIR fader taper (approximately -90 dB to +10 dB).
 
-The GET command prints the fader value. After building, the binary is available at `target/debug/mixinglib`:
+The GET command prints the requested channel value or label. After building, the binary is available at `target/debug/mixinglib`:
 
 ```sh
 ./target/debug/mixinglib -m xair -i <MIXER_IP> ch <CHANNEL> get
