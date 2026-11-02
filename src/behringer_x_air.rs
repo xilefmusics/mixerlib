@@ -11,6 +11,8 @@ const X_AIR_OSC_PORT: u16 = 10024;
 const MAX_INPUT_CHANNEL: u8 = 16;
 const MAX_BUS_SEND: u8 = 6;
 const MAX_FX_SEND: u8 = 4;
+const MAX_MUTE_GROUP: u8 = 4;
+const MAX_DCA_GROUP: u8 = 4;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_PACKET_SIZE: usize = 4096;
 const METER_SUBSCRIPTION_RENEW_INTERVAL: Duration = Duration::from_secs(5);
@@ -138,6 +140,39 @@ impl BehringerXAir {
         Ok(format!("/rtn/{fx}/mix/fader"))
     }
 
+    fn dca_address(dca: u8, parameter: &str) -> io::Result<String> {
+        if !(1..=MAX_DCA_GROUP).contains(&dca) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("DCA must be between 1 and {MAX_DCA_GROUP}"),
+            ));
+        }
+
+        Ok(format!("/dca/{dca}/{parameter}"))
+    }
+
+    fn bus_address(bus: u8, parameter: &str) -> io::Result<String> {
+        if !(1..=MAX_BUS_SEND).contains(&bus) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("bus must be between 1 and {MAX_BUS_SEND}"),
+            ));
+        }
+
+        Ok(format!("/bus/{bus}/{parameter}"))
+    }
+
+    fn mute_group_address(group: u8) -> io::Result<String> {
+        if !(1..=MAX_MUTE_GROUP).contains(&group) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("mute group must be between 1 and {MAX_MUTE_GROUP}"),
+            ));
+        }
+
+        Ok(format!("/config/mute/{group}"))
+    }
+
     fn channel_bus_send_target(channel: u8, bus: u8) -> io::Result<XAirSendTarget> {
         if !(1..=MAX_BUS_SEND).contains(&bus) {
             return Err(io::Error::new(
@@ -228,7 +263,7 @@ impl BehringerXAir {
         if value.contains('\0') {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "X AIR channel label cannot contain a null character",
+                "X AIR label cannot contain a null character",
             ));
         }
 
@@ -361,6 +396,39 @@ impl BehringerXAir {
         }
     }
 
+    fn receive_int_value(&self, expected_path: &str) -> io::Result<i32> {
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
+        let mut packet = [0_u8; MAX_PACKET_SIZE];
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timed out waiting for X AIR OSC response",
+                ));
+            }
+            self.socket.set_read_timeout(Some(remaining))?;
+
+            match self.socket.recv(&mut packet) {
+                Ok(packet_len) => {
+                    if let Some(value) = parse_int_response(&packet[..packet_len], expected_path)? {
+                        return Ok(value);
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     fn receive_mixer_info(&self) -> io::Result<MixerInfo> {
         let deadline = Instant::now() + RESPONSE_TIMEOUT;
         let mut packet = [0_u8; MAX_PACKET_SIZE];
@@ -400,6 +468,9 @@ impl BehringerXAir {
     ) -> io::Result<Box<dyn ChannelUpdateStream>> {
         if let XAirUpdateTarget::FxReturn(fx) = target {
             Self::fx_return_fader_address(fx)?;
+        }
+        if let XAirUpdateTarget::Dca(dca) = target {
+            Self::dca_address(dca, "fader")?;
         }
 
         let peer_addr = self.socket.peer_addr()?;
@@ -474,6 +545,87 @@ impl Mixer for BehringerXAir {
         Ok(self.model_config()?.dca_group_count)
     }
 
+    fn get_bus_label(&mut self, bus: u8) -> io::Result<String> {
+        let address = Self::bus_address(bus, "config/name")?;
+        self.send_message(&address, None)?;
+        self.receive_channel_label(&address)
+    }
+
+    fn get_mute_group_active(&mut self, group: u8) -> io::Result<bool> {
+        let address = Self::mute_group_address(group)?;
+        self.send_int_message(&address, None)?;
+        self.receive_channel_bool(&address)
+    }
+
+    fn set_mute_group_active(&mut self, group: u8, active: bool) -> io::Result<()> {
+        let address = Self::mute_group_address(group)?;
+        self.send_int_message(&address, Some(if active { 1 } else { 0 }))
+    }
+
+    fn get_channel_dca_group(&mut self, channel: u8, dca: u8) -> io::Result<bool> {
+        if !(1..=MAX_DCA_GROUP).contains(&dca) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("DCA must be between 1 and {MAX_DCA_GROUP}"),
+            ));
+        }
+        let address = Self::channel_address(channel, "grp/dca")?;
+        self.send_int_message(&address, None)?;
+        let mask = self.receive_int_value(&address)?;
+        Ok(mask & (1 << (dca - 1)) != 0)
+    }
+
+    fn set_channel_dca_group(&mut self, channel: u8, dca: u8, assigned: bool) -> io::Result<()> {
+        if !(1..=MAX_DCA_GROUP).contains(&dca) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("DCA must be between 1 and {MAX_DCA_GROUP}"),
+            ));
+        }
+        let address = Self::channel_address(channel, "grp/dca")?;
+        self.send_int_message(&address, None)?;
+        let mut mask = self.receive_int_value(&address)?;
+        let bit = 1 << (dca - 1);
+        if assigned {
+            mask |= bit;
+        } else {
+            mask &= !bit;
+        }
+        self.send_int_message(&address, Some(mask))
+    }
+
+    fn get_channel_mute_group(&mut self, channel: u8, group: u8) -> io::Result<bool> {
+        if !(1..=MAX_MUTE_GROUP).contains(&group) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("mute group must be between 1 and {MAX_MUTE_GROUP}"),
+            ));
+        }
+        let address = Self::channel_address(channel, "grp/mute")?;
+        self.send_int_message(&address, None)?;
+        let mask = self.receive_int_value(&address)?;
+        Ok(mask & (1 << (group - 1)) != 0)
+    }
+
+    fn set_channel_mute_group(&mut self, channel: u8, group: u8, assigned: bool) -> io::Result<()> {
+        if !(1..=MAX_MUTE_GROUP).contains(&group) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("mute group must be between 1 and {MAX_MUTE_GROUP}"),
+            ));
+        }
+        let address = Self::channel_address(channel, "grp/mute")?;
+        self.send_int_message(&address, None)?;
+        let mut mask = self.receive_int_value(&address)?;
+        let bit = 1 << (group - 1);
+        if assigned {
+            mask |= bit;
+        } else {
+            mask &= !bit;
+        }
+        self.send_int_message(&address, Some(mask))
+    }
+
     fn subscribe_channel_meter(&mut self, channel: u8) -> io::Result<Box<dyn ChannelMeterStream>> {
         if !(1..=MAX_INPUT_CHANNEL).contains(&channel) {
             return Err(io::Error::new(
@@ -526,6 +678,65 @@ impl Mixer for BehringerXAir {
         fx: u8,
     ) -> io::Result<Box<dyn ChannelUpdateStream>> {
         self.subscribe_parameter_updates(XAirUpdateTarget::FxReturn(fx))
+    }
+
+    fn get_dca_label(&mut self, dca: u8) -> io::Result<String> {
+        let address = Self::dca_address(dca, "config/name")?;
+        self.send_message(&address, None)?;
+        self.receive_channel_label(&address)
+    }
+
+    fn set_dca_label(&mut self, dca: u8, label: &str) -> io::Result<()> {
+        let address = Self::dca_address(dca, "config/name")?;
+        self.send_string_message(&address, label)
+    }
+
+    fn get_dca_mute(&mut self, dca: u8) -> io::Result<bool> {
+        let address = Self::dca_address(dca, "on")?;
+        self.send_int_message(&address, None)?;
+        self.receive_channel_bool(&address).map(|on| !on)
+    }
+
+    fn set_dca_mute(&mut self, dca: u8, muted: bool) -> io::Result<()> {
+        let address = Self::dca_address(dca, "on")?;
+        self.send_int_message(&address, Some(if muted { 0 } else { 1 }))
+    }
+
+    fn get_dca_fader(&mut self, dca: u8) -> io::Result<f32> {
+        let address = Self::dca_address(dca, "fader")?;
+        self.send_message(&address, None)?;
+        self.receive_float_value(&address)
+    }
+
+    fn set_dca_fader(&mut self, dca: u8, value: f32) -> io::Result<()> {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR DCA fader value must be between 0.0 and 1.0",
+            ));
+        }
+
+        let address = Self::dca_address(dca, "fader")?;
+        self.send_message(&address, Some(value))
+    }
+
+    fn get_dca_fader_db(&mut self, dca: u8) -> io::Result<f32> {
+        self.get_dca_fader(dca).map(fader_to_db)
+    }
+
+    fn set_dca_fader_db(&mut self, dca: u8, value: f32) -> io::Result<()> {
+        if !value.is_finite() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR DCA fader dB value must be finite",
+            ));
+        }
+
+        self.set_dca_fader(dca, db_to_fader(value))
+    }
+
+    fn subscribe_dca_updates(&mut self, dca: u8) -> io::Result<Box<dyn ChannelUpdateStream>> {
+        self.subscribe_parameter_updates(XAirUpdateTarget::Dca(dca))
     }
 
     fn get_channel_bus_send(&mut self, channel: u8, bus: u8) -> io::Result<f32> {
@@ -897,6 +1108,7 @@ enum XAirUpdateTarget {
     AuxFader,
     MainFader,
     FxReturn(u8),
+    Dca(u8),
 }
 
 impl ChannelUpdateStream for BehringerXAirChannelUpdateStream {
@@ -1176,6 +1388,35 @@ fn parse_float_response(packet: &[u8], expected_path: &str) -> io::Result<Option
     Ok(None)
 }
 
+fn parse_int_response(packet: &[u8], expected_path: &str) -> io::Result<Option<i32>> {
+    let mut offset = 0;
+    let address = read_osc_string(packet, &mut offset)?;
+    if address != "/status" && address != expected_path {
+        return Ok(None);
+    }
+
+    let arguments = read_parameter_arguments(packet, &mut offset)?;
+    if address == expected_path {
+        return Ok(arguments.into_iter().find_map(|argument| match argument {
+            OscArgument::Int(value) => Some(value),
+            _ => None,
+        }));
+    }
+
+    for pair in arguments.windows(2) {
+        if matches!(&pair[1], OscArgument::String(path) if path == expected_path) {
+            if let OscArgument::Int(value) = pair[0] {
+                return Ok(Some(value));
+            }
+            return Err(invalid_osc_data(
+                "X AIR integer response did not contain an integer value",
+            ));
+        }
+    }
+
+    Ok(None)
+}
+
 fn parse_channel_update(packet: &[u8], channel: u8) -> io::Result<Option<ChannelUpdate>> {
     let mut offset = 0;
     let address = read_osc_string(packet, &mut offset)?;
@@ -1208,7 +1449,67 @@ fn parse_target_update(
         XAirUpdateTarget::FxReturn(fx) => {
             parse_fader_update(packet, &format!("/rtn/{fx}/mix/fader"))
         }
+        XAirUpdateTarget::Dca(dca) => parse_dca_update(packet, dca),
     }
+}
+
+fn parse_dca_update(packet: &[u8], dca: u8) -> io::Result<Option<ChannelUpdate>> {
+    let mut offset = 0;
+    let address = read_osc_string(packet, &mut offset)?;
+    let arguments = read_parameter_arguments(packet, &mut offset)?;
+    if address == "/status" {
+        for pair in arguments.windows(2) {
+            if let OscArgument::String(path) = &pair[1] {
+                if let Some(update) =
+                    dca_update_for_path(path, std::slice::from_ref(&pair[0]), dca)?
+                {
+                    return Ok(Some(update));
+                }
+            }
+        }
+        return Ok(None);
+    }
+
+    dca_update_for_path(&address, &arguments, dca)
+}
+
+fn dca_update_for_path(
+    path: &str,
+    arguments: &[OscArgument],
+    dca: u8,
+) -> io::Result<Option<ChannelUpdate>> {
+    let prefix = format!("/dca/{dca}");
+    if path == format!("{prefix}/config/name") {
+        return match arguments.first() {
+            Some(OscArgument::String(value)) => Ok(Some(ChannelUpdate::Label(value.clone()))),
+            Some(_) => Err(invalid_osc_data(
+                "X AIR DCA label update did not contain a string value",
+            )),
+            None => Ok(None),
+        };
+    }
+
+    if path == format!("{prefix}/on") {
+        return match arguments.first() {
+            Some(value) => bool_argument_ref(value).map(|on| Some(ChannelUpdate::Mute(!on))),
+            None => Ok(None),
+        };
+    }
+
+    if path == format!("{prefix}/fader") {
+        return match arguments.first() {
+            Some(OscArgument::Float(value)) => Ok(Some(ChannelUpdate::Fader {
+                value: *value,
+                db: fader_to_db(*value),
+            })),
+            Some(_) => Err(invalid_osc_data(
+                "X AIR DCA fader update did not contain a float value",
+            )),
+            None => Ok(None),
+        };
+    }
+
+    Ok(None)
 }
 
 fn parse_send_update(packet: &[u8], target: &XAirSendTarget) -> io::Result<Option<SendUpdate>> {
@@ -1374,7 +1675,7 @@ fn parse_channel_label_response(packet: &[u8], expected_path: &str) -> io::Resul
                 return Ok(Some(value.clone()));
             }
             return Err(invalid_osc_data(
-                "X AIR channel label response did not contain a string value",
+                "X AIR label response did not contain a string value",
             ));
         }
     }

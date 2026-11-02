@@ -36,6 +36,9 @@ enum Command {
     Aux(AuxArgs),
     Main(FaderArgs),
     Fx(FxArgs),
+    Dca(DcaArgs),
+    Bus(BusArgs),
+    MuteGroup(MuteGroupArgs),
 }
 
 #[derive(Debug, Args)]
@@ -105,6 +108,109 @@ enum ChannelAction {
         field: ChannelSubscribeField,
     },
     Send(SendArgs),
+    Group(ChannelGroupArgs),
+}
+
+#[derive(Debug, Args)]
+struct ChannelGroupArgs {
+    #[command(subcommand)]
+    group: ChannelGroupKind,
+}
+
+#[derive(Debug, Subcommand)]
+enum ChannelGroupKind {
+    Dca {
+        dca: u8,
+        #[command(subcommand)]
+        action: GroupAssignmentAction,
+    },
+    Mute {
+        group: u8,
+        #[command(subcommand)]
+        action: GroupAssignmentAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum GroupAssignmentAction {
+    Get,
+    Set { value: String },
+}
+
+#[derive(Debug, Args)]
+struct DcaArgs {
+    dca: u8,
+
+    #[command(subcommand)]
+    action: DcaAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum DcaAction {
+    Get {
+        #[arg(value_enum)]
+        field: Option<DcaGetField>,
+    },
+    Set(DcaSetArgs),
+    Subscribe,
+}
+
+#[derive(Debug, Args)]
+struct DcaSetArgs {
+    #[command(subcommand)]
+    action: Option<DcaSetAction>,
+
+    #[arg(allow_hyphen_values = true)]
+    value: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum DcaSetAction {
+    Label { label: String },
+    Mute { value: String },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum DcaGetField {
+    #[value(name = "db")]
+    Db,
+    Label,
+    Mute,
+}
+
+#[derive(Debug, Args)]
+struct MuteGroupArgs {
+    group: u8,
+
+    #[command(subcommand)]
+    action: MuteGroupAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum MuteGroupAction {
+    Get,
+    Set { value: String },
+}
+
+#[derive(Debug, Args)]
+struct BusArgs {
+    bus: u8,
+
+    #[command(subcommand)]
+    action: BusAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum BusAction {
+    Get {
+        #[arg(value_enum)]
+        field: BusGetField,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum BusGetField {
+    Label,
 }
 
 #[derive(Debug, Args)]
@@ -278,6 +384,19 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
         Command::Fx(FxArgs { fx, action }) => {
             run_fader_action(mixer, FaderTarget::Fx(fx), action)?;
         }
+        Command::Dca(DcaArgs { dca, action }) => run_dca_action(mixer, dca, action)?,
+        Command::Bus(BusArgs { bus, action }) => match action {
+            BusAction::Get {
+                field: BusGetField::Label,
+            } => println!("{}", mixer.get_bus_label(bus)?),
+        },
+        Command::MuteGroup(MuteGroupArgs { group, action }) => match action {
+            MuteGroupAction::Get => println!("{}", mixer.get_mute_group_active(group)?),
+            MuteGroupAction::Set { value } => {
+                mixer.set_mute_group_active(group, parse_bool_value(&value)?)?;
+                println!("ok");
+            }
+        },
         Command::Ch(ChannelArgs { channel, action }) => match action {
             ChannelAction::Get { field } => match field {
                 Some(ChannelGetField::Db) => {
@@ -389,7 +508,95 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
                 }
             },
             ChannelAction::Send(args) => run_send_args(mixer, SendSource::Channel(channel), args)?,
+            ChannelAction::Group(ChannelGroupArgs { group }) => match group {
+                ChannelGroupKind::Dca { dca, action } => match action {
+                    GroupAssignmentAction::Get => {
+                        println!("{}", mixer.get_channel_dca_group(channel, dca)?);
+                    }
+                    GroupAssignmentAction::Set { value } => {
+                        mixer.set_channel_dca_group(channel, dca, parse_bool_value(&value)?)?;
+                        println!("ok");
+                    }
+                },
+                ChannelGroupKind::Mute { group, action } => match action {
+                    GroupAssignmentAction::Get => {
+                        println!("{}", mixer.get_channel_mute_group(channel, group)?);
+                    }
+                    GroupAssignmentAction::Set { value } => {
+                        mixer.set_channel_mute_group(channel, group, parse_bool_value(&value)?)?;
+                        println!("ok");
+                    }
+                },
+            },
         },
+    }
+
+    Ok(())
+}
+
+fn run_dca_action(
+    mixer: &mut impl Mixer,
+    dca: u8,
+    action: DcaAction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        DcaAction::Get { field } => match field {
+            Some(DcaGetField::Db) => println!("{} dB", mixer.get_dca_fader_db(dca)?),
+            Some(DcaGetField::Label) => println!("{}", mixer.get_dca_label(dca)?),
+            Some(DcaGetField::Mute) => println!("{}", mixer.get_dca_mute(dca)?),
+            None => println!("{}", mixer.get_dca_fader(dca)?),
+        },
+        DcaAction::Set(DcaSetArgs { action, value }) => match (action, value) {
+            (Some(DcaSetAction::Label { label }), None) => {
+                mixer.set_dca_label(dca, &label)?;
+                println!("ok");
+            }
+            (Some(DcaSetAction::Mute { value }), None) => {
+                mixer.set_dca_mute(dca, parse_bool_value(&value)?)?;
+                println!("ok");
+            }
+            (None, Some(value)) => {
+                if value.to_ascii_lowercase().ends_with("db") {
+                    mixer.set_dca_fader_db(dca, parse_db_value(&value)?)?;
+                } else {
+                    mixer.set_dca_fader(dca, value.parse::<f32>()?)?;
+                }
+                println!("ok");
+            }
+            (Some(_), Some(_)) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unexpected value after DCA setting",
+                )
+                .into());
+            }
+            (None, None) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "expected a DCA fader value or setting",
+                )
+                .into());
+            }
+        },
+        DcaAction::Subscribe => {
+            let mut stream = mixer.subscribe_dca_updates(dca)?;
+            let stdout = io::stdout();
+            let mut output = stdout.lock();
+            loop {
+                match stream.recv() {
+                    Ok(update) => {
+                        writeln!(output, "{}", format_dca_update_line(dca, update))?;
+                        output.flush()?;
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
     }
 
     Ok(())
@@ -715,6 +922,17 @@ fn format_named_fader_update(target: FaderTarget, update: ChannelUpdate) -> Stri
             format!("{name} | fader: {value:.3} ({db:.1} dB)")
         }
         update => format!("{name} | update: {update:?}"),
+    }
+}
+
+fn format_dca_update_line(dca: u8, update: ChannelUpdate) -> String {
+    match update {
+        ChannelUpdate::Label(label) => format!("DCA {dca} | label: {label}"),
+        ChannelUpdate::Mute(muted) => format!("DCA {dca} | muted: {muted}"),
+        ChannelUpdate::Fader { value, db } => {
+            format!("DCA {dca} | fader: {value:.3} ({db:.1} dB)")
+        }
+        update => format!("DCA {dca} | update: {update:?}"),
     }
 }
 

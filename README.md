@@ -1,8 +1,8 @@
 # mixerlib
 
-`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading mixer inventory, channel meters, labels, preamp gain, fader level, mute, solo, pan, and bus/effect send levels and states; subscribing to meter samples and control changes; and setting these controls.
+`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading mixer inventory, channel meters, labels, preamp gain, fader level, mute, solo, pan, DCA controls, mute groups, and bus/effect send levels and states; subscribing to meter samples and control changes; and setting these controls.
 
-The `mixinglib` command-line program reads channel meters and controls, subscribes to meter and control changes, and changes channel controls and sends.
+The `mixinglib` command-line program reads channel meters and controls, subscribes to meter and control changes, and changes channel, DCA, mute group, and send controls.
 
 Request mixer information:
 
@@ -96,6 +96,36 @@ cargo run -- -m xair -i <MIXER_IP> main set -6db
 cargo run -- -m xair -i <MIXER_IP> fx 1 get
 cargo run -- -m xair -i <MIXER_IP> fx 4 set -6db
 ```
+
+Read a bus label. Bus numbers range from 1 to 6:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> bus 1 get label
+```
+
+Read and set DCA faders, mute state, and labels. DCA numbers range from 1 to 4. DCA faders accept normalized values from `0.0` to `1.0` or dB values with a `db` suffix:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> dca 1 get
+cargo run -- -m xair -i <MIXER_IP> dca 1 get db
+cargo run -- -m xair -i <MIXER_IP> dca 1 set -6db
+cargo run -- -m xair -i <MIXER_IP> dca 1 get mute
+cargo run -- -m xair -i <MIXER_IP> dca 1 set mute on
+cargo run -- -m xair -i <MIXER_IP> dca 1 set label "Backing Vocals"
+cargo run -- -m xair -i <MIXER_IP> dca 1 subscribe
+```
+
+Read or activate one of the four mute groups, and assign a channel to DCA or mute groups. Boolean values accept `true`/`false`, `on`/`off`, or `1`/`0`:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> mute-group 1 get
+cargo run -- -m xair -i <MIXER_IP> mute-group 1 set on
+cargo run -- -m xair -i <MIXER_IP> ch 3 group dca 1 get
+cargo run -- -m xair -i <MIXER_IP> ch 3 group dca 1 set on
+cargo run -- -m xair -i <MIXER_IP> ch 3 group mute 2 set on
+```
+
+Changing a channel group assignment updates that group's bit in the channel's OSC assignment mask and preserves the other assignments.
 
 Subscribe to fader changes for Aux, Main LR, or an FX return. Stop the stream with Ctrl-C:
 
@@ -217,6 +247,18 @@ fn set_fx_return_fader_db(
 
 fn read_gain(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<f32> {
     mixer.get_channel_gain(channel)
+}
+
+fn set_dca_fader_db(mixer: &mut impl Mixer, dca: u8, value: f32) -> std::io::Result<()> {
+    mixer.set_dca_fader_db(dca, value)
+}
+
+fn set_mute_group_active(
+    mixer: &mut impl Mixer,
+    group: u8,
+    active: bool,
+) -> std::io::Result<()> {
+    mixer.set_mute_group_active(group, active)
 }
 
 fn set_gain(mixer: &mut impl Mixer, channel: u8, value_db: f32) -> std::io::Result<()> {

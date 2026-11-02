@@ -94,6 +94,27 @@ pub trait Mixer {
         ))
     }
 
+    fn get_bus_label(&mut self, _bus: u8) -> io::Result<String> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "bus labels are not supported",
+        ))
+    }
+
+    fn get_mute_group_active(&mut self, _group: u8) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "mute group state is not supported",
+        ))
+    }
+
+    fn set_mute_group_active(&mut self, _group: u8, _active: bool) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting mute group state is not supported",
+        ))
+    }
+
     fn get_channel_label(&mut self, _channel: u8) -> io::Result<String> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -133,6 +154,39 @@ pub trait Mixer {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "setting channel mute is not supported",
+        ))
+    }
+
+    fn get_channel_dca_group(&mut self, _channel: u8, _dca: u8) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel DCA group assignments are not supported",
+        ))
+    }
+
+    fn set_channel_dca_group(&mut self, _channel: u8, _dca: u8, _assigned: bool) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting channel DCA group assignments is not supported",
+        ))
+    }
+
+    fn get_channel_mute_group(&mut self, _channel: u8, _group: u8) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel mute group assignments are not supported",
+        ))
+    }
+
+    fn set_channel_mute_group(
+        &mut self,
+        _channel: u8,
+        _group: u8,
+        _assigned: bool,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting channel mute group assignments is not supported",
         ))
     }
 
@@ -515,6 +569,69 @@ pub trait Mixer {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "FX return fader updates are not supported",
+        ))
+    }
+
+    fn get_dca_label(&mut self, _dca: u8) -> io::Result<String> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "DCA labels are not supported",
+        ))
+    }
+
+    fn set_dca_label(&mut self, _dca: u8, _label: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting DCA labels is not supported",
+        ))
+    }
+
+    fn get_dca_mute(&mut self, _dca: u8) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "DCA mute is not supported",
+        ))
+    }
+
+    fn set_dca_mute(&mut self, _dca: u8, _muted: bool) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting DCA mute is not supported",
+        ))
+    }
+
+    fn get_dca_fader(&mut self, _dca: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "DCA faders are not supported",
+        ))
+    }
+
+    fn set_dca_fader(&mut self, _dca: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting DCA faders is not supported",
+        ))
+    }
+
+    fn get_dca_fader_db(&mut self, _dca: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "DCA fader dB is not supported",
+        ))
+    }
+
+    fn set_dca_fader_db(&mut self, _dca: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting DCA faders in dB is not supported",
+        ))
+    }
+
+    fn subscribe_dca_updates(&mut self, _dca: u8) -> io::Result<Box<dyn ChannelUpdateStream>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "DCA updates are not supported",
         ))
     }
 }
