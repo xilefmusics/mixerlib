@@ -26,9 +26,40 @@ Select a mixer family with `-m` or `--mixer-family`; supported values are `wing`
 Pass a mixer implementation to code that uses the shared interface:
 
 ```rust
-use mixerlib::Mixer;
+use mixerlib::{Mixer, MixerFeature};
 
 fn read_channel_fader(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<f32> {
     mixer.get_channel(channel)
 }
+
+fn print_mixer_shape(mixer: &mut impl Mixer) -> std::io::Result<()> {
+    let capabilities = mixer.capabilities()?;
+    println!("{} input channels", capabilities.topology.input_channels);
+    if capabilities.supports(MixerFeature::Equalizers) {
+        println!("Equalizer controls are available");
+    }
+    Ok(())
+}
 ```
+
+`topology()` reports the input-channel count, the number of channels with preamp controls, and the Aux, FX, bus, mute-group, and DCA counts. `capabilities()` returns that topology with the supported feature groups. Feature groups describe controls exposed by this library for the connected model; individual operations can still return `Unsupported` for a target or model-specific limitation. X AIR discovery reads the mixer model because its protocol does not report topology directly. The supported groups for each implementation are:
+
+| Feature group | X AIR / M AIR | X32 / M32 | WING |
+| --- | --- | --- | --- |
+| Channel faders and strip state | Yes | Yes | Yes |
+| Preamp, EQ, dynamics | Yes | Yes | — |
+| Aux returns, FX returns, buses, main output | Yes | Yes | Buses and main output |
+| DCA controls | Yes | Yes | Yes |
+| DCA assignments, mute groups | Yes | Yes | — |
+| Channel-to-bus sends | Yes | Yes | Yes |
+| Channel-to-FX sends, return sends | Yes | — | — |
+| Send enable, tap and pan settings | Yes | Yes | — |
+| Input and output routing | Yes | — | — |
+| FX engines, metering, snapshots | Yes | — | — |
+| Parameter updates | Yes | Yes | Yes |
+| Network and monitor settings | Yes | — | — |
+| USB stereo recorder | XR12, MR12, XR16 | — | — |
+| Automix | Yes | Yes | — |
+| USB audio routing | XR18, X18, MR18 | — | — |
+
+The feature names are available as `MixerFeature` values and can be queried with `MixerCapabilities::supports`. A missing feature means the implementation does not expose that control family for the connected model.

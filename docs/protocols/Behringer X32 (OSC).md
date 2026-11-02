@@ -12,6 +12,8 @@ The X32 implementation renews `/xremote` subscriptions every five seconds while 
 
 `BehringerX32` implements the shared `Mixer` interface for X32 paths and value ranges:
 
+`topology()` reports the X32/M32 profile, including 32 input channels with preamp controls. `capabilities()` returns the control feature groups implemented for that profile. These queries use the library's static family inventory and do not send OSC requests.
+
 | Interface area | X32 mapping |
 | --- | --- |
 | Information and status | `/xinfo`, `/status` |

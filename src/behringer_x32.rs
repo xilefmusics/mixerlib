@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 use crate::{
     ChannelUpdate, ChannelUpdateStream, DynamicsDetector, DynamicsEnvelope, DynamicsFilterType,
     DynamicsKeySource, DynamicsMode, DynamicsRatio, DynamicsTarget, EqBandType, EqTarget, GateMode,
-    InsertFxSlot, Mixer, MixerColor, MixerInfo, MixerSendDestination, MixerSendSource, MixerStatus,
-    ParameterUpdate, ParameterUpdateStream, ParameterValue, SendTap, SendUpdate, SendUpdateStream,
-    StripTarget,
+    InsertFxSlot, Mixer, MixerCapabilities, MixerColor, MixerFeature, MixerInfo,
+    MixerSendDestination, MixerSendSource, MixerStatus, MixerTopology, ParameterUpdate,
+    ParameterUpdateStream, ParameterValue, SendTap, SendUpdate, SendUpdateStream, StripTarget,
 };
 
 const X32_OSC_PORT: u16 = 10023;
@@ -399,6 +399,42 @@ impl BehringerX32 {
 }
 
 impl Mixer for BehringerX32 {
+    fn topology(&mut self) -> io::Result<MixerTopology> {
+        Ok(MixerTopology {
+            input_channels: 32,
+            preamp_channels: 32,
+            aux_channels: 6,
+            fx_units: 8,
+            buses: 16,
+            mute_groups: 6,
+            dca_groups: 8,
+        })
+    }
+
+    fn capabilities(&mut self) -> io::Result<MixerCapabilities> {
+        Ok(MixerCapabilities {
+            topology: self.topology()?,
+            features: vec![
+                MixerFeature::ChannelFaders,
+                MixerFeature::ChannelStripState,
+                MixerFeature::Preamp,
+                MixerFeature::Equalizers,
+                MixerFeature::Dynamics,
+                MixerFeature::AuxReturns,
+                MixerFeature::FxReturns,
+                MixerFeature::Buses,
+                MixerFeature::MainOutput,
+                MixerFeature::DcaControls,
+                MixerFeature::DcaAssignments,
+                MixerFeature::MuteGroups,
+                MixerFeature::ChannelBusSends,
+                MixerFeature::SendConfiguration,
+                MixerFeature::ParameterUpdates,
+                MixerFeature::Automix,
+            ],
+        })
+    }
+
     fn status(&mut self) -> io::Result<MixerStatus> {
         self.send_empty("/status")?;
         let message = self.receive_message("/status")?;
@@ -441,30 +477,6 @@ impl Mixer for BehringerX32 {
             server_version: None,
             ip_address,
         })
-    }
-
-    fn get_channel_count(&mut self) -> io::Result<u8> {
-        Ok(32)
-    }
-
-    fn get_aux_count(&mut self) -> io::Result<u8> {
-        Ok(6)
-    }
-
-    fn get_fx_count(&mut self) -> io::Result<u8> {
-        Ok(8)
-    }
-
-    fn get_bus_count(&mut self) -> io::Result<u8> {
-        Ok(16)
-    }
-
-    fn get_mute_group_count(&mut self) -> io::Result<u8> {
-        Ok(6)
-    }
-
-    fn get_dca_group_count(&mut self) -> io::Result<u8> {
-        Ok(8)
     }
 
     fn get_channel_label(&mut self, channel: u8) -> io::Result<String> {

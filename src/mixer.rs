@@ -22,6 +22,60 @@ pub struct MixerInfo {
     pub ip_address: Option<IpAddr>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MixerTopology {
+    pub input_channels: u8,
+    pub preamp_channels: u8,
+    pub aux_channels: u8,
+    pub fx_units: u8,
+    pub buses: u8,
+    pub mute_groups: u8,
+    pub dca_groups: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MixerFeature {
+    ChannelFaders,
+    ChannelStripState,
+    Preamp,
+    Equalizers,
+    Dynamics,
+    AuxReturns,
+    FxReturns,
+    Buses,
+    MainOutput,
+    DcaControls,
+    DcaAssignments,
+    MuteGroups,
+    ChannelBusSends,
+    ChannelFxSends,
+    ReturnSends,
+    SendConfiguration,
+    InputRouting,
+    OutputRouting,
+    FxEngines,
+    Metering,
+    ParameterUpdates,
+    Snapshots,
+    Recorder,
+    NetworkSettings,
+    MonitorSettings,
+    Automix,
+    UsbAudioRouting,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MixerCapabilities {
+    pub topology: MixerTopology,
+    pub features: Vec<MixerFeature>,
+}
+
+impl MixerCapabilities {
+    pub fn supports(&self, feature: MixerFeature) -> bool {
+        self.features.contains(&feature)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MixerStatus {
     pub state: String,
@@ -1234,6 +1288,20 @@ pub trait Mixer {
         ))
     }
 
+    fn capabilities(&mut self) -> io::Result<MixerCapabilities> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "mixer capability discovery is not supported",
+        ))
+    }
+
+    fn topology(&mut self) -> io::Result<MixerTopology> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "mixer topology discovery is not supported",
+        ))
+    }
+
     unsupported_method!(
         subscribe_typed_meter_stream(_stream: MeterStreamId) -> Box<dyn TypedMeterStream>
     );
@@ -1609,45 +1677,27 @@ pub trait Mixer {
     unsupported_method!(get_usb_recorder_mounted() -> bool);
 
     fn get_channel_count(&mut self) -> io::Result<u8> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "channel count is not supported",
-        ))
+        Ok(self.topology()?.input_channels)
     }
 
     fn get_aux_count(&mut self) -> io::Result<u8> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Aux count is not supported",
-        ))
+        Ok(self.topology()?.aux_channels)
     }
 
     fn get_fx_count(&mut self) -> io::Result<u8> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "FX count is not supported",
-        ))
+        Ok(self.topology()?.fx_units)
     }
 
     fn get_bus_count(&mut self) -> io::Result<u8> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "bus count is not supported",
-        ))
+        Ok(self.topology()?.buses)
     }
 
     fn get_mute_group_count(&mut self) -> io::Result<u8> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "mute group count is not supported",
-        ))
+        Ok(self.topology()?.mute_groups)
     }
 
     fn get_dca_group_count(&mut self) -> io::Result<u8> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "DCA group count is not supported",
-        ))
+        Ok(self.topology()?.dca_groups)
     }
 
     fn get_bus_label(&mut self, _bus: u8) -> io::Result<String> {

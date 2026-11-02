@@ -124,6 +124,8 @@ The channel label is an OSC string. GET messages have no arguments; label set me
 
 The `BehringerXAir` implementation maps the public `Mixer` trait methods to these OSC messages:
 
+`topology()` and `capabilities()` request `/xinfo` on the first call, then reuse the model profile. The six legacy count methods return the corresponding fields from `topology()`. Capability features vary by model: XR12/MR12/XR16 expose the USB stereo recorder; XR18/X18/MR18 expose multitrack USB routing.
+
 | `Mixer` method | OSC request | Behavior |
 | --- | --- | --- |
 | `status()` | `/status ,` | Returns server state, IP address, and server name. |
@@ -243,10 +245,10 @@ Snapshot slots are numbered 1–64. `get_snapshot_name()` and `get_snapshot_scop
 
 The protocol does not provide a query for input-channel, Aux, FX-return, bus, mute-group, or DCA-group counts. The first `get_*_count()` call requests `/xinfo`, then the implementation selects the matching static configuration from the returned model and reuses it for later count calls. Supported models and their counts are:
 
-| Model | Channels | Aux | FX | Buses | Mute groups | DCA groups |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| XR12, MR12 | 16 | 1 | 4 | 6 | 4 | 4 |
-| XR16 | 16 | 1 | 4 | 6 | 4 | 4 |
-| XR18, X18, MR18 | 16 | 1 | 4 | 6 | 4 | 4 |
+| Model | Channels | Preamp channels | Aux | FX | Buses | Mute groups | DCA groups |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| XR12, MR12 | 16 | 4 | 1 | 4 | 6 | 4 | 4 |
+| XR16 | 16 | 8 | 1 | 4 | 6 | 4 | 4 |
+| XR18, X18, MR18 | 16 | 16 | 1 | 4 | 6 | 4 | 4 |
 
-The channel count is the number of `/ch` input strips exposed by the `Mixer` API; each supported model exposes 16. Aux counts the separate stereo Aux/USB return strip. Physical input totals differ by model. If `/xinfo` reports a model outside this list, count methods return `Unsupported`.
+The channel count is the number of `/ch` input strips exposed by the `Mixer` API; each supported model exposes 16. Preamp channels reports how many have controllable headamps. Aux counts the separate stereo Aux/USB return strip. Physical input totals differ by model. If `/xinfo` reports a model outside this list, topology and count queries return `Unsupported`.

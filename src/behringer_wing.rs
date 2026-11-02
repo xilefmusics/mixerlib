@@ -3,8 +3,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 use crate::{
-    Mixer, MixerInfo, MixerSendDestination, MixerSendSource, ParameterUpdate,
-    ParameterUpdateStream, ParameterValue, StripTarget,
+    Mixer, MixerCapabilities, MixerFeature, MixerInfo, MixerSendDestination, MixerSendSource,
+    MixerTopology, ParameterUpdate, ParameterUpdateStream, ParameterValue, StripTarget,
 };
 
 const WING_OSC_PORT: u16 = 2223;
@@ -261,6 +261,33 @@ impl BehringerWing {
 }
 
 impl Mixer for BehringerWing {
+    fn topology(&mut self) -> io::Result<MixerTopology> {
+        Ok(MixerTopology {
+            input_channels: 40,
+            preamp_channels: 0,
+            aux_channels: 8,
+            fx_units: 16,
+            buses: 16,
+            mute_groups: 8,
+            dca_groups: 8,
+        })
+    }
+
+    fn capabilities(&mut self) -> io::Result<MixerCapabilities> {
+        Ok(MixerCapabilities {
+            topology: self.topology()?,
+            features: vec![
+                MixerFeature::ChannelFaders,
+                MixerFeature::ChannelStripState,
+                MixerFeature::Buses,
+                MixerFeature::MainOutput,
+                MixerFeature::DcaControls,
+                MixerFeature::ChannelBusSends,
+                MixerFeature::ParameterUpdates,
+            ],
+        })
+    }
+
     fn info(&mut self) -> io::Result<MixerInfo> {
         let response = self.get_string("/?")?;
         let mut fields = response.splitn(6, ',');
@@ -290,30 +317,6 @@ impl Mixer for BehringerWing {
             server_version: None,
             ip_address,
         })
-    }
-
-    fn get_channel_count(&mut self) -> io::Result<u8> {
-        Ok(40)
-    }
-
-    fn get_aux_count(&mut self) -> io::Result<u8> {
-        Ok(8)
-    }
-
-    fn get_fx_count(&mut self) -> io::Result<u8> {
-        Ok(16)
-    }
-
-    fn get_bus_count(&mut self) -> io::Result<u8> {
-        Ok(16)
-    }
-
-    fn get_mute_group_count(&mut self) -> io::Result<u8> {
-        Ok(8)
-    }
-
-    fn get_dca_group_count(&mut self) -> io::Result<u8> {
-        Ok(8)
     }
 
     fn get_channel_label(&mut self, channel: u8) -> io::Result<String> {

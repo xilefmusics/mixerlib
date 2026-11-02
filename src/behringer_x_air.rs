@@ -7,10 +7,11 @@ use crate::{
     DynamicsDetector, DynamicsEnvelope, DynamicsFilterType, DynamicsKeySource, DynamicsMode,
     DynamicsRatio, DynamicsTarget, EqBandType, EqTarget, FxType, GateMode, InfrastructureMode,
     InputSource, InsertFxSlot, LanMode, MainOutputSource, MeterSample, MeterStream, MeterStreamId,
-    Mixer, MixerInfo, MixerSendDestination, MixerSendSource, MixerStatus, NetworkMode,
-    OutputPosition, ParameterUpdate, ParameterUpdateStream, ParameterValue, RecorderState,
-    ReturnTarget, RoutingOutput, RoutingSource, RtaPosition, RtaSource, SendTap, SendUpdate,
-    SendUpdateStream, SoloMode, SoloSource, TypedMeterStream, WifiSecurity,
+    Mixer, MixerCapabilities, MixerFeature, MixerInfo, MixerSendDestination, MixerSendSource,
+    MixerStatus, MixerTopology, NetworkMode, OutputPosition, ParameterUpdate,
+    ParameterUpdateStream, ParameterValue, RecorderState, ReturnTarget, RoutingOutput,
+    RoutingSource, RtaPosition, RtaSource, SendTap, SendUpdate, SendUpdateStream, SoloMode,
+    SoloSource, TypedMeterStream, WifiSecurity,
 };
 
 const X_AIR_OSC_PORT: u16 = 10024;
@@ -44,27 +45,39 @@ const MAIN_FADER_ADDRESS: &str = "/lr/mix/fader";
 #[derive(Clone, Copy, Debug)]
 struct XAirModelConfig {
     channel_count: u8,
+    preamp_channel_count: u8,
     aux_count: u8,
     fx_count: u8,
     bus_count: u8,
     mute_group_count: u8,
     dca_group_count: u8,
+    supports_multitrack_usb: bool,
+    supports_usb_recorder: bool,
 }
 
 impl XAirModelConfig {
     fn for_model(model: &str) -> Option<Self> {
-        match model.trim().to_ascii_uppercase().as_str() {
+        let model = model.trim().to_ascii_uppercase();
+        match model.as_str() {
             "XR12" | "MR12" | "XR16" | "XR18" | "X18" | "MR18" => {}
             _ => return None,
         }
 
         Some(Self {
             channel_count: 16,
+            preamp_channel_count: match model.as_str() {
+                "XR12" | "MR12" => 4,
+                "XR16" => 8,
+                "XR18" | "X18" | "MR18" => 16,
+                _ => 0,
+            },
             aux_count: 1,
             fx_count: 4,
             bus_count: 6,
             mute_group_count: 4,
             dca_group_count: 4,
+            supports_multitrack_usb: matches!(model.as_str(), "XR18" | "X18" | "MR18"),
+            supports_usb_recorder: matches!(model.as_str(), "XR12" | "MR12" | "XR16"),
         })
     }
 }
@@ -160,18 +173,13 @@ impl BehringerXAir {
 
     fn ensure_channel_preamp(&mut self, channel: u8) -> io::Result<()> {
         self.ensure_supported_firmware()?;
+        let config = self.model_config()?;
         let model = self
             .model
             .as_deref()
             .unwrap_or_default()
             .to_ascii_uppercase();
-        let count = match model.as_str() {
-            "XR12" | "MR12" => 4,
-            "XR16" => 8,
-            "XR18" | "X18" | "MR18" => 16,
-            _ => 0,
-        };
-        if channel == 0 || channel > count {
+        if channel == 0 || channel > config.preamp_channel_count {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!("channel {channel} has no controllable preamp on {model}"),
@@ -1354,6 +1362,19 @@ macro_rules! eq_band_float_accessors {
 }
 
 impl Mixer for BehringerXAir {
+    fn topology(&mut self) -> io::Result<MixerTopology> {
+        let config = self.model_config()?;
+        Ok(MixerTopology {
+            input_channels: config.channel_count,
+            preamp_channels: config.preamp_channel_count,
+            aux_channels: config.aux_count,
+            fx_units: config.fx_count,
+            buses: config.bus_count,
+            mute_groups: config.mute_group_count,
+            dca_groups: config.dca_group_count,
+        })
+    }
+
     fn status(&mut self) -> io::Result<MixerStatus> {
         self.send_message("/status", None)?;
         self.receive_mixer_status()
@@ -1366,6 +1387,47 @@ impl Mixer for BehringerXAir {
         self.model = Some(info.model.clone());
         self.firmware_version = Some(info.firmware_version.clone());
         Ok(info)
+    }
+
+    fn capabilities(&mut self) -> io::Result<MixerCapabilities> {
+        let config = self.model_config()?;
+        let mut features = vec![
+            MixerFeature::ChannelFaders,
+            MixerFeature::ChannelStripState,
+            MixerFeature::Preamp,
+            MixerFeature::Equalizers,
+            MixerFeature::Dynamics,
+            MixerFeature::AuxReturns,
+            MixerFeature::FxReturns,
+            MixerFeature::Buses,
+            MixerFeature::MainOutput,
+            MixerFeature::DcaControls,
+            MixerFeature::DcaAssignments,
+            MixerFeature::MuteGroups,
+            MixerFeature::ChannelBusSends,
+            MixerFeature::ChannelFxSends,
+            MixerFeature::ReturnSends,
+            MixerFeature::SendConfiguration,
+            MixerFeature::InputRouting,
+            MixerFeature::OutputRouting,
+            MixerFeature::FxEngines,
+            MixerFeature::Metering,
+            MixerFeature::ParameterUpdates,
+            MixerFeature::Snapshots,
+            MixerFeature::NetworkSettings,
+            MixerFeature::MonitorSettings,
+            MixerFeature::Automix,
+        ];
+        if config.supports_usb_recorder {
+            features.push(MixerFeature::Recorder);
+        }
+        if config.supports_multitrack_usb {
+            features.push(MixerFeature::UsbAudioRouting);
+        }
+        Ok(MixerCapabilities {
+            topology: self.topology()?,
+            features,
+        })
     }
 
     fn subscribe_typed_meter_stream(
@@ -3458,30 +3520,6 @@ impl Mixer for BehringerXAir {
     fn set_rta_decay_seconds(&mut self, seconds: f32) -> io::Result<()> {
         self.ensure_supported_firmware()?;
         self.set_scaled_float("/-prefs/rta/decay", seconds, 0.25, 16.0, true, "RTA decay")
-    }
-
-    fn get_channel_count(&mut self) -> io::Result<u8> {
-        Ok(self.model_config()?.channel_count)
-    }
-
-    fn get_aux_count(&mut self) -> io::Result<u8> {
-        Ok(self.model_config()?.aux_count)
-    }
-
-    fn get_fx_count(&mut self) -> io::Result<u8> {
-        Ok(self.model_config()?.fx_count)
-    }
-
-    fn get_bus_count(&mut self) -> io::Result<u8> {
-        Ok(self.model_config()?.bus_count)
-    }
-
-    fn get_mute_group_count(&mut self) -> io::Result<u8> {
-        Ok(self.model_config()?.mute_group_count)
-    }
-
-    fn get_dca_group_count(&mut self) -> io::Result<u8> {
-        Ok(self.model_config()?.dca_group_count)
     }
 
     fn get_bus_label(&mut self, bus: u8) -> io::Result<String> {

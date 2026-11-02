@@ -12,6 +12,8 @@ The implementation queries `/?` for mixer information. WING OSC can also provide
 
 `BehringerWing` implements the shared `Mixer` interface for the mappings below:
 
+`topology()` reports 40 input channels, eight Aux channels, 16 FX units, 16 buses, and eight each of mute and DCA groups. It reports zero preamp-control channels because this implementation does not expose preamp controls. `capabilities()` lists the control feature groups exposed by this implementation. These queries use the library's static family profile and do not send OSC requests.
+
 | Interface area | WING mapping |
 | --- | --- |
 | Information | `/?` |
