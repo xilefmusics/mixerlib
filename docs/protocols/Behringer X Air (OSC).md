@@ -4,14 +4,20 @@ The default reference for the OSC message format is the [Open Sound Control Spec
 
 ## Behringer X AIR channel controls over UDP
 
-Send UDP messages to `<mixer-IP>:10024`, as specified in the [official X AIR Mixer Series Remote Control Protocol](https://mediadl.musictribe.com/download/software/behringer/XAIR/X%20AIR%20Remote%20Control%20Protocol.pdf). For GET requests, the mixer replies to the client's source IP and port with a `/status` message containing the requested value and its OSC path. Here, `nn` is the two-digit channel number (`01`–`16` on the XR18), and fader values are floats from `0.0` to `1.0`.
+Send UDP messages to `<mixer-IP>:10024`, as specified in the [official X AIR Mixer Series Remote Control Protocol](https://mediadl.musictribe.com/download/software/behringer/XAIR/X%20AIR%20Remote%20Control%20Protocol.pdf). For GET requests, the mixer replies to the client's source IP and port with a `/status` message containing the requested value and its OSC path. Here, `nn` is the two-digit input channel number (`01`–`16` on the XR18), and fader values are floats from `0.0` to `1.0`. The stereo Aux input strip, labeled 17/18 on the XR18, uses `/rtn/aux/mix/fader`.
 
 | Operation | OSC message |
 | --- | --- |
 | GET channel `n` label | `/ch/nn/config/name ,` (no arguments) |
 | Set channel `n` label to `name` | `/ch/nn/config/name ,s name` |
-| GET channel `n` fader | `/ch/nn/mix/fader ,` (no arguments) |
-| Set channel `n` fader to value `x` | `/ch/nn/mix/fader ,f x` |
+| GET channel `n` fader | `/ch/nn/mix/fader ,` for channels 1–16 |
+| Set channel `n` fader to value `x` | `/ch/nn/mix/fader ,f x` for channels 1–16 |
+| GET stereo Aux fader | `/rtn/aux/mix/fader ,` (no arguments) |
+| Set stereo Aux fader to value `x` | `/rtn/aux/mix/fader ,f x` |
+| GET Main LR fader | `/lr/mix/fader ,` (no arguments) |
+| Set Main LR fader to value `x` | `/lr/mix/fader ,f x` |
+| GET FX return `n` fader | `/rtn/n/mix/fader ,` for FX returns 1–4 |
+| Set FX return `n` fader to value `x` | `/rtn/n/mix/fader ,f x` for FX returns 1–4 |
 | GET channel `n` preamp gain | `/headamp/nn/gain ,` (no arguments) |
 | Set channel `n` preamp gain to normalized value `x` | `/headamp/nn/gain ,f x` |
 | GET channel `n` mute state | `/ch/nn/mix/on ,` (no arguments) |
@@ -45,12 +51,27 @@ The `BehringerXAir` implementation maps the public `Mixer` trait methods to thes
 | `subscribe_channel_updates(channel)` | `/xremote ,` | Returns pushed changes for the channel label, preamp gain, mute, solo, pan, and fader. Fader updates include normalized and dB values. |
 | `subscribe_channel_meter(channel)` | `/meters ,si "/meters/0" <channel - 1>` | Opens a meter subscription and returns a stream of pre- and post-fader L/R levels in dBFS. |
 | `get_channel_meter(channel)` | `/meters ,si "/meters/0" <channel - 1>` | Returns the first sample from a channel meter subscription. |
-| `get_channel(channel)` | `/ch/nn/mix/fader ,` | Returns the normalized fader value from `0.0` to `1.0`. |
-| `set_channel(channel, value)` | `/ch/nn/mix/fader ,f <value>` | Sets the normalized fader value; `value` must be finite and from `0.0` to `1.0`. |
-| `get_channel_db(channel)` | `/ch/nn/mix/fader ,` | Returns the fader value converted to dB and rounded to 0.1 dB. |
-| `set_channel_db(channel, value)` | `/ch/nn/mix/fader ,f <value>` | Converts the finite dB value to the normalized fader range, clamping values outside -90 dB to +10 dB. |
+| `get_channel(channel)` | `/ch/nn/mix/fader ,` for channels 1–16 | Returns the normalized fader value from `0.0` to `1.0`. |
+| `set_channel(channel, value)` | `/ch/nn/mix/fader ,f <value>` for channels 1–16 | Sets the normalized fader value; `value` must be finite and from `0.0` to `1.0`. |
+| `get_channel_db(channel)` | `/ch/nn/mix/fader ,` for channels 1–16 | Returns the fader value converted to dB and rounded to 0.1 dB. |
+| `set_channel_db(channel, value)` | `/ch/nn/mix/fader ,f <value>` for channels 1–16 | Converts the finite dB value to the normalized fader range, clamping values outside -90 dB to +10 dB. |
+| `get_aux_fader()` | `/rtn/aux/mix/fader ,` | Returns the normalized stereo Aux fader value from `0.0` to `1.0`. |
+| `set_aux_fader(value)` | `/rtn/aux/mix/fader ,f <value>` | Sets the normalized stereo Aux fader value; `value` must be finite and from `0.0` to `1.0`. |
+| `get_aux_fader_db()` | `/rtn/aux/mix/fader ,` | Returns the stereo Aux fader value converted to dB and rounded to 0.1 dB. |
+| `set_aux_fader_db(value)` | `/rtn/aux/mix/fader ,f <value>` | Converts the finite dB value to the normalized fader range, clamping values outside -90 dB to +10 dB. |
+| `get_main_fader()` | `/lr/mix/fader ,` | Returns the normalized Main LR fader value from `0.0` to `1.0`. |
+| `set_main_fader(value)` | `/lr/mix/fader ,f <value>` | Sets the normalized Main LR fader value; `value` must be finite and from `0.0` to `1.0`. |
+| `get_main_fader_db()` | `/lr/mix/fader ,` | Returns the Main LR fader value converted to dB and rounded to 0.1 dB. |
+| `set_main_fader_db(value)` | `/lr/mix/fader ,f <value>` | Converts the finite dB value to the normalized fader range, clamping values outside -90 dB to +10 dB. |
+| `get_fx_return_fader(fx)` | `/rtn/{fx}/mix/fader ,` for FX returns 1–4 | Returns the normalized FX return fader value from `0.0` to `1.0`. |
+| `set_fx_return_fader(fx, value)` | `/rtn/{fx}/mix/fader ,f <value>` for FX returns 1–4 | Sets the normalized FX return fader value; `value` must be finite and from `0.0` to `1.0`. |
+| `get_fx_return_fader_db(fx)` | `/rtn/{fx}/mix/fader ,` for FX returns 1–4 | Returns the FX return fader value converted to dB and rounded to 0.1 dB. |
+| `set_fx_return_fader_db(fx, value)` | `/rtn/{fx}/mix/fader ,f <value>` for FX returns 1–4 | Converts the finite dB value to the normalized fader range, clamping values outside -90 dB to +10 dB. |
+| `subscribe_aux_fader_updates()` | `/xremote ,` | Streams fader changes for the stereo Aux input as `ChannelUpdate::Fader`. |
+| `subscribe_main_fader_updates()` | `/xremote ,` | Streams fader changes for Main LR as `ChannelUpdate::Fader`. |
+| `subscribe_fx_return_fader_updates(fx)` | `/xremote ,` | Streams fader changes for FX return 1–4 as `ChannelUpdate::Fader`. |
 
-The implementation accepts channel numbers from `1` to `16` and formats them as two digits in the OSC address. Gain, fader, pan, label, mute, and solo reads receive a `/status` reply containing the value followed by its OSC path, or a reply that uses the requested OSC path directly and contains just the value. Float values use the `f` type tag, mute and solo values use the `i` type tag, and labels use the `s` type tag. Writes send one UDP message and do not wait for a mixer acknowledgement. Gain values are translated linearly between the mixer’s normalized OSC range and its -12 dB to +60 dB control range; reads are rounded to the mixer’s 0.5 dB gain step.
+The implementation accepts channel numbers from `1` to `16` for channel controls. The stereo Aux input, Main LR, and FX returns have separate fader methods and use `/rtn/aux/mix/fader`, `/lr/mix/fader`, and `/rtn/{fx}/mix/fader`, respectively. FX return numbers range from `1` to `4`. Gain, fader, pan, label, mute, and solo reads receive a `/status` reply containing the value followed by its OSC path, or a reply that uses the requested OSC path directly and contains just the value. Float values use the `f` type tag, mute and solo values use the `i` type tag, and labels use the `s` type tag. Writes send one UDP message and do not wait for a mixer acknowledgement. Gain values are translated linearly between the mixer’s normalized OSC range and its -12 dB to +60 dB control range; reads are rounded to the mixer’s 0.5 dB gain step.
 
 ## Channel meter subscriptions
 
@@ -61,6 +82,8 @@ The stream resends its subscription every five seconds while it is being read. `
 ## Channel control subscriptions
 
 `subscribe_channel_updates(channel)` uses a separate UDP socket and sends `/xremote ,` to receive pushed parameter changes. The mixer sends changes for all parameters to that socket, and the library filters the updates to the requested channel. It decodes label, gain, mute, solo, pan, and fader changes into `ChannelUpdate` values. Gain updates use the same dB conversion and 0.5 dB rounding as `get_channel_gain()`. Mute updates invert the OSC `on` value. Fader updates include both the normalized value and its dB conversion.
+
+`subscribe_aux_fader_updates()`, `subscribe_main_fader_updates()`, and `subscribe_fx_return_fader_updates(fx)` use separate `/xremote ,` subscriptions and filter pushed messages to the selected fader path. They return fader changes as `ChannelUpdate::Fader` with normalized and dB values. FX return numbers must be from `1` to `4`.
 
 The stream reports changes received after it is opened; it does not provide an initial channel snapshot. Use the corresponding GET methods to read the starting state. The subscription is renewed every five seconds while `ChannelUpdateStream::recv()` is being called. A receive with no matching change uses the library’s one-second timeout. Dropping the stream stops renewals, and the mixer expires the subscription after ten seconds. The protocol allows up to eight active `/xremote` clients.
 

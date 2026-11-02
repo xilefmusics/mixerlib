@@ -33,6 +33,9 @@ enum MixerFamily {
 enum Command {
     Info,
     Ch(ChannelArgs),
+    Aux(FaderArgs),
+    Main(FaderArgs),
+    Fx(FxArgs),
 }
 
 #[derive(Debug, Args)]
@@ -41,6 +44,33 @@ struct ChannelArgs {
 
     #[command(subcommand)]
     action: ChannelAction,
+}
+
+#[derive(Debug, Args)]
+struct FaderArgs {
+    #[command(subcommand)]
+    action: FaderAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum FaderAction {
+    Get {
+        #[arg(value_enum)]
+        field: Option<FaderGetField>,
+    },
+    Set {
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+    },
+    Subscribe,
+}
+
+#[derive(Debug, Args)]
+struct FxArgs {
+    fx: u8,
+
+    #[command(subcommand)]
+    action: FaderAction,
 }
 
 #[derive(Debug, Subcommand)]
@@ -99,9 +129,22 @@ enum ChannelGetField {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
+enum FaderGetField {
+    #[value(name = "db")]
+    Db,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
 enum ChannelSubscribeField {
     Controls,
     Meter,
+}
+
+#[derive(Clone, Copy)]
+enum FaderTarget {
+    Aux,
+    Main,
+    Fx(u8),
 }
 
 fn main() -> ExitCode {
@@ -135,6 +178,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Command::Info => print_info(mixer.info()?),
+        Command::Aux(FaderArgs { action }) => run_fader_action(mixer, FaderTarget::Aux, action)?,
+        Command::Main(FaderArgs { action }) => run_fader_action(mixer, FaderTarget::Main, action)?,
+        Command::Fx(FxArgs { fx, action }) => {
+            run_fader_action(mixer, FaderTarget::Fx(fx), action)?;
+        }
         Command::Ch(ChannelArgs { channel, action }) => match action {
             ChannelAction::Get { field } => match field {
                 Some(ChannelGetField::Db) => {
@@ -249,6 +297,95 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
     }
 
     Ok(())
+}
+
+fn run_fader_action(
+    mixer: &mut impl Mixer,
+    target: FaderTarget,
+    action: FaderAction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        FaderAction::Get { field } => {
+            let value = match (target, field) {
+                (FaderTarget::Aux, Some(FaderGetField::Db)) => mixer.get_aux_fader_db()?,
+                (FaderTarget::Aux, None) => mixer.get_aux_fader()?,
+                (FaderTarget::Main, Some(FaderGetField::Db)) => mixer.get_main_fader_db()?,
+                (FaderTarget::Main, None) => mixer.get_main_fader()?,
+                (FaderTarget::Fx(fx), Some(FaderGetField::Db)) => {
+                    mixer.get_fx_return_fader_db(fx)?
+                }
+                (FaderTarget::Fx(fx), None) => mixer.get_fx_return_fader(fx)?,
+            };
+            if matches!(field, Some(FaderGetField::Db)) {
+                println!("{value} dB");
+            } else {
+                println!("{value}");
+            }
+        }
+        FaderAction::Set { value } => {
+            let decibels = value.to_ascii_lowercase().ends_with("db");
+            let value = if decibels {
+                parse_db_value(&value)?
+            } else {
+                value.parse::<f32>()?
+            };
+            match (target, decibels) {
+                (FaderTarget::Aux, true) => mixer.set_aux_fader_db(value)?,
+                (FaderTarget::Aux, false) => mixer.set_aux_fader(value)?,
+                (FaderTarget::Main, true) => mixer.set_main_fader_db(value)?,
+                (FaderTarget::Main, false) => mixer.set_main_fader(value)?,
+                (FaderTarget::Fx(fx), true) => mixer.set_fx_return_fader_db(fx, value)?,
+                (FaderTarget::Fx(fx), false) => mixer.set_fx_return_fader(fx, value)?,
+            }
+            println!("ok");
+        }
+        FaderAction::Subscribe => run_fader_subscription(mixer, target)?,
+    }
+
+    Ok(())
+}
+
+fn run_fader_subscription(
+    mixer: &mut impl Mixer,
+    target: FaderTarget,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stream = match target {
+        FaderTarget::Aux => mixer.subscribe_aux_fader_updates()?,
+        FaderTarget::Main => mixer.subscribe_main_fader_updates()?,
+        FaderTarget::Fx(fx) => mixer.subscribe_fx_return_fader_updates(fx)?,
+    };
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+
+    loop {
+        match stream.recv() {
+            Ok(update) => {
+                writeln!(output, "{}", format_named_fader_update(target, update))?;
+                output.flush()?;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn format_named_fader_update(target: FaderTarget, update: ChannelUpdate) -> String {
+    let name = match target {
+        FaderTarget::Aux => "Aux".to_string(),
+        FaderTarget::Main => "Main LR".to_string(),
+        FaderTarget::Fx(fx) => format!("FX {fx}"),
+    };
+
+    match update {
+        ChannelUpdate::Fader { value, db } => {
+            format!("{name} | fader: {value:.3} ({db:.1} dB)")
+        }
+        update => format!("{name} | update: {update:?}"),
+    }
 }
 
 fn parse_db_value(value: &str) -> Result<f32, Box<dyn std::error::Error>> {

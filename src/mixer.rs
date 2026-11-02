@@ -140,6 +140,114 @@ pub trait Mixer {
     fn get_channel_db(&mut self, channel: u8) -> io::Result<f32>;
 
     fn set_channel_db(&mut self, channel: u8, value: f32) -> io::Result<()>;
+
+    fn get_aux_fader(&mut self) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Aux fader is not supported",
+        ))
+    }
+
+    fn set_aux_fader(&mut self, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting the Aux fader is not supported",
+        ))
+    }
+
+    fn get_aux_fader_db(&mut self) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Aux fader dB is not supported",
+        ))
+    }
+
+    fn set_aux_fader_db(&mut self, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting the Aux fader in dB is not supported",
+        ))
+    }
+
+    fn subscribe_aux_fader_updates(&mut self) -> io::Result<Box<dyn ChannelUpdateStream>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Aux fader updates are not supported",
+        ))
+    }
+
+    fn get_main_fader(&mut self) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Main LR fader is not supported",
+        ))
+    }
+
+    fn set_main_fader(&mut self, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting the Main LR fader is not supported",
+        ))
+    }
+
+    fn get_main_fader_db(&mut self) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Main LR fader dB is not supported",
+        ))
+    }
+
+    fn set_main_fader_db(&mut self, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting the Main LR fader in dB is not supported",
+        ))
+    }
+
+    fn subscribe_main_fader_updates(&mut self) -> io::Result<Box<dyn ChannelUpdateStream>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Main LR fader updates are not supported",
+        ))
+    }
+
+    fn get_fx_return_fader(&mut self, _fx: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "FX return faders are not supported",
+        ))
+    }
+
+    fn set_fx_return_fader(&mut self, _fx: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting FX return faders is not supported",
+        ))
+    }
+
+    fn get_fx_return_fader_db(&mut self, _fx: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "FX return fader dB is not supported",
+        ))
+    }
+
+    fn set_fx_return_fader_db(&mut self, _fx: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting FX return faders in dB is not supported",
+        ))
+    }
+
+    fn subscribe_fx_return_fader_updates(
+        &mut self,
+        _fx: u8,
+    ) -> io::Result<Box<dyn ChannelUpdateStream>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "FX return fader updates are not supported",
+        ))
+    }
 }
 
 #[cfg(test)]

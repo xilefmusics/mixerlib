@@ -13,6 +13,8 @@ const MAX_PACKET_SIZE: usize = 4096;
 const METER_SUBSCRIPTION_RENEW_INTERVAL: Duration = Duration::from_secs(5);
 const PARAMETER_SUBSCRIPTION_RENEW_INTERVAL: Duration = Duration::from_secs(5);
 const CHANNEL_METER_ADDRESS: &str = "/meters/0";
+const AUX_FADER_ADDRESS: &str = "/rtn/aux/mix/fader";
+const MAIN_FADER_ADDRESS: &str = "/lr/mix/fader";
 
 #[derive(Debug)]
 pub struct BehringerXAir {
@@ -68,6 +70,17 @@ impl BehringerXAir {
         }
 
         Ok(format!("/headamp/{channel:02}/gain"))
+    }
+
+    fn fx_return_fader_address(fx: u8) -> io::Result<String> {
+        if !(1..=4).contains(&fx) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "FX return must be between 1 and 4",
+            ));
+        }
+
+        Ok(format!("/rtn/{fx}/mix/fader"))
     }
 
     fn send_message(&self, address: &str, value: Option<f32>) -> io::Result<()> {
@@ -255,6 +268,31 @@ impl BehringerXAir {
             }
         }
     }
+
+    fn subscribe_parameter_updates(
+        &mut self,
+        target: XAirUpdateTarget,
+    ) -> io::Result<Box<dyn ChannelUpdateStream>> {
+        if let XAirUpdateTarget::FxReturn(fx) = target {
+            Self::fx_return_fader_address(fx)?;
+        }
+
+        let peer_addr = self.socket.peer_addr()?;
+        let bind_addr = match peer_addr.ip() {
+            IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        };
+        let socket = UdpSocket::bind(bind_addr)?;
+        socket.connect(peer_addr)?;
+        socket.set_read_timeout(Some(RESPONSE_TIMEOUT))?;
+        send_parameter_subscription(&socket)?;
+
+        Ok(Box::new(BehringerXAirChannelUpdateStream {
+            socket,
+            target,
+            last_subscription: Instant::now(),
+        }))
+    }
 }
 
 impl Mixer for BehringerXAir {
@@ -299,21 +337,22 @@ impl Mixer for BehringerXAir {
             ));
         }
 
-        let peer_addr = self.socket.peer_addr()?;
-        let bind_addr = match peer_addr.ip() {
-            IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-            IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
-        };
-        let socket = UdpSocket::bind(bind_addr)?;
-        socket.connect(peer_addr)?;
-        socket.set_read_timeout(Some(RESPONSE_TIMEOUT))?;
-        send_parameter_subscription(&socket)?;
+        self.subscribe_parameter_updates(XAirUpdateTarget::Channel(channel))
+    }
 
-        Ok(Box::new(BehringerXAirChannelUpdateStream {
-            socket,
-            channel,
-            last_subscription: Instant::now(),
-        }))
+    fn subscribe_aux_fader_updates(&mut self) -> io::Result<Box<dyn ChannelUpdateStream>> {
+        self.subscribe_parameter_updates(XAirUpdateTarget::AuxFader)
+    }
+
+    fn subscribe_main_fader_updates(&mut self) -> io::Result<Box<dyn ChannelUpdateStream>> {
+        self.subscribe_parameter_updates(XAirUpdateTarget::MainFader)
+    }
+
+    fn subscribe_fx_return_fader_updates(
+        &mut self,
+        fx: u8,
+    ) -> io::Result<Box<dyn ChannelUpdateStream>> {
+        self.subscribe_parameter_updates(XAirUpdateTarget::FxReturn(fx))
     }
 
     fn get_channel_label(&mut self, channel: u8) -> io::Result<String> {
@@ -422,6 +461,104 @@ impl Mixer for BehringerXAir {
 
         self.set_channel(channel, db_to_fader(value))
     }
+
+    fn get_aux_fader(&mut self) -> io::Result<f32> {
+        self.send_message(AUX_FADER_ADDRESS, None)?;
+        self.receive_float_value(AUX_FADER_ADDRESS)
+    }
+
+    fn set_aux_fader(&mut self, value: f32) -> io::Result<()> {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR Aux fader value must be between 0.0 and 1.0",
+            ));
+        }
+
+        self.send_message(AUX_FADER_ADDRESS, Some(value))?;
+        Ok(())
+    }
+
+    fn get_aux_fader_db(&mut self) -> io::Result<f32> {
+        self.get_aux_fader().map(fader_to_db)
+    }
+
+    fn set_aux_fader_db(&mut self, value: f32) -> io::Result<()> {
+        if !value.is_finite() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR Aux fader dB value must be finite",
+            ));
+        }
+
+        self.set_aux_fader(db_to_fader(value))
+    }
+
+    fn get_main_fader(&mut self) -> io::Result<f32> {
+        self.send_message(MAIN_FADER_ADDRESS, None)?;
+        self.receive_float_value(MAIN_FADER_ADDRESS)
+    }
+
+    fn set_main_fader(&mut self, value: f32) -> io::Result<()> {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR Main LR fader value must be between 0.0 and 1.0",
+            ));
+        }
+
+        self.send_message(MAIN_FADER_ADDRESS, Some(value))?;
+        Ok(())
+    }
+
+    fn get_main_fader_db(&mut self) -> io::Result<f32> {
+        self.get_main_fader().map(fader_to_db)
+    }
+
+    fn set_main_fader_db(&mut self, value: f32) -> io::Result<()> {
+        if !value.is_finite() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR Main LR fader dB value must be finite",
+            ));
+        }
+
+        self.set_main_fader(db_to_fader(value))
+    }
+
+    fn get_fx_return_fader(&mut self, fx: u8) -> io::Result<f32> {
+        let address = Self::fx_return_fader_address(fx)?;
+        self.send_message(&address, None)?;
+        self.receive_float_value(&address)
+    }
+
+    fn set_fx_return_fader(&mut self, fx: u8, value: f32) -> io::Result<()> {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR FX return fader value must be between 0.0 and 1.0",
+            ));
+        }
+
+        let address = Self::fx_return_fader_address(fx)?;
+        self.send_message(&address, Some(value))?;
+        Ok(())
+    }
+
+    fn get_fx_return_fader_db(&mut self, fx: u8) -> io::Result<f32> {
+        self.get_fx_return_fader(fx).map(fader_to_db)
+    }
+
+    fn set_fx_return_fader_db(&mut self, fx: u8, value: f32) -> io::Result<()> {
+        if !value.is_finite() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR FX return fader dB value must be finite",
+            ));
+        }
+
+        self.set_fx_return_fader(fx, db_to_fader(value))
+    }
 }
 
 struct BehringerXAirChannelMeterStream {
@@ -432,8 +569,16 @@ struct BehringerXAirChannelMeterStream {
 
 struct BehringerXAirChannelUpdateStream {
     socket: UdpSocket,
-    channel: u8,
+    target: XAirUpdateTarget,
     last_subscription: Instant,
+}
+
+#[derive(Clone, Copy)]
+enum XAirUpdateTarget {
+    Channel(u8),
+    AuxFader,
+    MainFader,
+    FxReturn(u8),
 }
 
 impl ChannelUpdateStream for BehringerXAirChannelUpdateStream {
@@ -458,8 +603,7 @@ impl ChannelUpdateStream for BehringerXAirChannelUpdateStream {
 
             match self.socket.recv(&mut packet) {
                 Ok(packet_len) => {
-                    if let Some(update) = parse_channel_update(&packet[..packet_len], self.channel)?
-                    {
+                    if let Some(update) = parse_target_update(&packet[..packet_len], self.target)? {
                         return Ok(update);
                     }
                 }
@@ -693,6 +837,29 @@ fn parse_channel_update(packet: &[u8], channel: u8) -> io::Result<Option<Channel
     }
 
     channel_update_for_path(&address, &arguments, channel)
+}
+
+fn parse_target_update(
+    packet: &[u8],
+    target: XAirUpdateTarget,
+) -> io::Result<Option<ChannelUpdate>> {
+    match target {
+        XAirUpdateTarget::Channel(channel) => parse_channel_update(packet, channel),
+        XAirUpdateTarget::AuxFader => parse_fader_update(packet, AUX_FADER_ADDRESS),
+        XAirUpdateTarget::MainFader => parse_fader_update(packet, MAIN_FADER_ADDRESS),
+        XAirUpdateTarget::FxReturn(fx) => {
+            parse_fader_update(packet, &format!("/rtn/{fx}/mix/fader"))
+        }
+    }
+}
+
+fn parse_fader_update(packet: &[u8], expected_path: &str) -> io::Result<Option<ChannelUpdate>> {
+    parse_float_response(packet, expected_path).map(|value| {
+        value.map(|value| ChannelUpdate::Fader {
+            value,
+            db: fader_to_db(value),
+        })
+    })
 }
 
 fn channel_update_for_path(

@@ -70,6 +70,31 @@ Set a channel fader in decibels:
 cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> set -6db
 ```
 
+Read and set the XR18 stereo Aux fader:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> aux get
+cargo run -- -m xair -i <MIXER_IP> aux get db
+cargo run -- -m xair -i <MIXER_IP> aux set -6db
+```
+
+Read and set the Main LR and FX return faders. FX numbers range from 1 to 4:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> main get
+cargo run -- -m xair -i <MIXER_IP> main set -6db
+cargo run -- -m xair -i <MIXER_IP> fx 1 get
+cargo run -- -m xair -i <MIXER_IP> fx 4 set -6db
+```
+
+Subscribe to fader changes for Aux, Main LR, or an FX return. Stop the stream with Ctrl-C:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> aux subscribe
+cargo run -- -m xair -i <MIXER_IP> main subscribe
+cargo run -- -m xair -i <MIXER_IP> fx 2 subscribe
+```
+
 Set a channel label:
 
 ```sh
@@ -101,6 +126,8 @@ cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> set pan 0.5
 
 The fader `set` command accepts a normalized `0.0` to `1.0` value or a dB value with a `db` suffix. Fader dB values use the X AIR fader taper (approximately -90 dB to +10 dB). Channel preamp gain accepts values from -12 dB to +60 dB.
 
+The XR18 stereo Aux input has its own `aux` command for fader GET and SET. Channel fader and other channel controls use channel numbers `1`–`16`.
+
 The GET command prints the requested channel value, state, or label. After building, the binary is available at `target/debug/mixinglib`:
 
 ```sh
@@ -126,6 +153,26 @@ fn read_fader_db(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<f32> {
 
 fn set_fader_db(mixer: &mut impl Mixer, channel: u8, value: f32) -> std::io::Result<()> {
     mixer.set_channel_db(channel, value)
+}
+
+fn read_aux_fader(mixer: &mut impl Mixer) -> std::io::Result<f32> {
+    mixer.get_aux_fader()
+}
+
+fn set_aux_fader_db(mixer: &mut impl Mixer, value: f32) -> std::io::Result<()> {
+    mixer.set_aux_fader_db(value)
+}
+
+fn read_main_fader(mixer: &mut impl Mixer) -> std::io::Result<f32> {
+    mixer.get_main_fader()
+}
+
+fn set_fx_return_fader_db(
+    mixer: &mut impl Mixer,
+    fx: u8,
+    value: f32,
+) -> std::io::Result<()> {
+    mixer.set_fx_return_fader_db(fx, value)
 }
 
 fn read_gain(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<f32> {
