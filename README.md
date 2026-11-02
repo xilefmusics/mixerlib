@@ -1,8 +1,8 @@
 # mixerlib
 
-`mixerlib` is a Rust library for working with audio mixers. Its `Mixer` trait exposes typed X AIR/M AIR OSC controls for channel input and processing, bus and Main processing, effects, sends, routing, automix, monitoring, recorder, mixer settings, snapshots, and meters. `BehringerXAir` supports XR12, MR12, XR16, XR18, X18, and MR18 running firmware 1.11 or newer; model-specific controls return `Unsupported` where unavailable.
+`mixerlib` is a Rust library for working with audio mixers. Its `Mixer` trait exposes typed OSC controls for the Behringer X AIR/M AIR and X32 families, including channel processing, faders, buses, sends, strip groups, and automix. `BehringerXAir` supports XR12, MR12, XR16, XR18, X18, and MR18 running firmware 1.11 or newer. `BehringerX32` supports the X32 OSC control families implemented in [its protocol guide](docs/protocols/Behringer%20X32%20%28OSC%29.md); unmapped controls return `Unsupported`.
 
-The `mixinglib` command-line program reads and changes X AIR OSC controls, including processing, effects, routing, network and mixer settings, snapshots, sends, strips, and meters. It also subscribes to typed meter and control updates.
+The `mixinglib` command-line program reads and changes supported X AIR and X32 OSC controls. X AIR also supports the extended routing, settings, snapshots, and meter commands described below.
 
 Request mixer information:
 
@@ -36,9 +36,19 @@ Build the project and CLI:
 cargo build
 ```
 
-The `-m` (`--mixer-family`) option currently accepts `xair`. Use `-i` or `--ip` to provide the mixer address.
+The `-m` (`--mixer-family`) option accepts `xair` and `x32`; it defaults to `xair`. Use `-i` or `--ip` to provide the mixer address.
 
-The implementation uses OSC over UDP on port 10024. USB input/output routing and the stereo recorder controls are OSC parameters. USB audio data streaming and MIDI transport are outside this OSC library.
+X AIR uses OSC over UDP on port 10024. X32 uses OSC over UDP on port 10023. USB audio data streaming and MIDI transport are outside this OSC library.
+
+Control an X32 channel fader or a mix bus with the shared commands:
+
+```sh
+cargo run -- -m x32 -i <MIXER_IP> ch 1 get
+cargo run -- -m x32 -i <MIXER_IP> ch 1 set -6db
+cargo run -- -m x32 -i <MIXER_IP> bus 1 set mute on
+```
+
+`BehringerX32` supports information and status, inventory counts, channel labels and faders, preamp gain and phantom power, phase and high-pass controls, channel gate/EQ/dynamics, EQ and dynamics on channels/buses/Main, processing inserts, bus and Main faders, DCA controls, channel-to-bus sends, strip groups, solo/pan, automix, and parameter update subscriptions. The current `Mixer` trait's X AIR meter sample types do not match the X32 float meter streams, so X32 meter methods remain unsupported. Other controls without an X32 mapping also return `Unsupported`.
 
 Read a channel fader, replacing the placeholders with the mixer address and channel:
 

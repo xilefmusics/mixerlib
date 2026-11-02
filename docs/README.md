@@ -6,11 +6,11 @@ The tables list major digital mixer lines. A blank protocol cell means no genera
 
 | Mixer | Protocol |
 | --- | --- |
-| [X32](https://cdn-media.empowertribe.com/e452c7959c0d4002908c23044a9558a7/8849399545886.pdf) | OSC |
-| [X32 COMPACT](https://cdn-media.empowertribe.com/13241f187345464c84d59367d5ea4e54/8849797021726.pdf) | OSC |
-| [X32 PRODUCER](https://cdn-media.empowertribe.com/2cfef5bd1a124d4a876562b55dc81806/8849385750558.pdf) | OSC |
-| [X32 RACK](https://cdn-media.empowertribe.com/1cac2faf617a4c548ffd4dc893ec4ebb/8849854726174.pdf) | OSC |
-| [X32 CORE](https://cdn-media.empowertribe.com/c03243eef6284239893fa4b535db4739/8849402396702.pdf) | OSC |
+| [X32](https://cdn-media.empowertribe.com/e452c7959c0d4002908c23044a9558a7/8849399545886.pdf) | [Behringer X32 (OSC)](protocols/Behringer%20X32%20%28OSC%29.md) |
+| [X32 COMPACT](https://cdn-media.empowertribe.com/13241f187345464c84d59367d5ea4e54/8849797021726.pdf) | [Behringer X32 (OSC)](protocols/Behringer%20X32%20%28OSC%29.md) |
+| [X32 PRODUCER](https://cdn-media.empowertribe.com/2cfef5bd1a124d4a876562b55dc81806/8849385750558.pdf) | [Behringer X32 (OSC)](protocols/Behringer%20X32%20%28OSC%29.md) |
+| [X32 RACK](https://cdn-media.empowertribe.com/1cac2faf617a4c548ffd4dc893ec4ebb/8849854726174.pdf) | [Behringer X32 (OSC)](protocols/Behringer%20X32%20%28OSC%29.md) |
+| [X32 CORE](https://cdn-media.empowertribe.com/c03243eef6284239893fa4b535db4739/8849402396702.pdf) | [Behringer X32 (OSC)](protocols/Behringer%20X32%20%28OSC%29.md) |
 | [X AIR X18](https://cdn-media.empowertribe.com/ffe0de45e14541f797928d639a8933b2/M_BE_0605-AAA_X-AIR_EN.pdf) | [Behringer X Air (OSC)](protocols/Behringer%20X%20Air%20%28OSC%29.md) |
 | [X AIR XR18](https://cdn-media.empowertribe.com/ffe0de45e14541f797928d639a8933b2/M_BE_0605-AAA_X-AIR_EN.pdf) | [Behringer X Air (OSC)](protocols/Behringer%20X%20Air%20%28OSC%29.md) |
 | [X AIR XR16](https://cdn-media.empowertribe.com/ffe0de45e14541f797928d639a8933b2/M_BE_0605-AAA_X-AIR_EN.pdf) | [Behringer X Air (OSC)](protocols/Behringer%20X%20Air%20%28OSC%29.md) |
