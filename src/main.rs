@@ -44,8 +44,20 @@ struct ChannelArgs {
 
 #[derive(Debug, Subcommand)]
 enum ChannelAction {
-    Get,
-    Set { value: f32 },
+    Get {
+        #[arg(value_enum)]
+        unit: Option<ChannelUnit>,
+    },
+    Set {
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ChannelUnit {
+    #[value(name = "db")]
+    Db,
 }
 
 fn main() -> ExitCode {
@@ -80,9 +92,20 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
     match command {
         Command::Info => print_info(mixer.info()?),
         Command::Ch(ChannelArgs { channel, action }) => match action {
-            ChannelAction::Get => println!("{}", mixer.get_channel(channel)?),
+            ChannelAction::Get { unit } => match unit {
+                Some(ChannelUnit::Db) => {
+                    println!("{} dB", mixer.get_channel_db(channel)?);
+                }
+                None => println!("{}", mixer.get_channel(channel)?),
+            },
             ChannelAction::Set { value } => {
-                mixer.set_channel(channel, value)?;
+                if value.to_ascii_lowercase().ends_with("db") {
+                    let decibels = value[..value.len() - 2].parse::<f32>()?;
+                    mixer.set_channel_db(channel, decibels)?;
+                } else {
+                    let value = value.parse::<f32>()?;
+                    mixer.set_channel(channel, value)?;
+                }
                 println!("ok");
             }
         },

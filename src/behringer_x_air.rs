@@ -147,6 +147,55 @@ impl Mixer for BehringerXAir {
         self.send_message(&address, Some(value))?;
         Ok(())
     }
+
+    fn get_channel_db(&mut self, channel: u8) -> io::Result<f32> {
+        self.get_channel(channel).map(fader_to_db)
+    }
+
+    fn set_channel_db(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        if !value.is_finite() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR fader dB value must be finite",
+            ));
+        }
+
+        self.set_channel(channel, db_to_fader(value))
+    }
+}
+
+fn fader_to_db(value: f32) -> f32 {
+    let db = if value >= 1.0 {
+        10.0
+    } else if value >= 0.5 {
+        40.0 * value - 30.0
+    } else if value >= 0.25 {
+        80.0 * value - 50.0
+    } else if value >= 0.0625 {
+        160.0 * value - 70.0
+    } else if value >= 0.0 {
+        480.0 * value - 90.0
+    } else {
+        -90.0
+    };
+
+    (db * 10.0).round() / 10.0
+}
+
+fn db_to_fader(value: f32) -> f32 {
+    if value >= 10.0 {
+        1.0
+    } else if value >= -10.0 {
+        (value + 30.0) / 40.0
+    } else if value >= -30.0 {
+        (value + 50.0) / 80.0
+    } else if value >= -60.0 {
+        (value + 70.0) / 160.0
+    } else if value >= -90.0 {
+        (value + 90.0) / 480.0
+    } else {
+        0.0
+    }
 }
 
 fn append_osc_string(packet: &mut Vec<u8>, value: &str) {

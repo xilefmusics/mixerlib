@@ -13,6 +13,8 @@ Send UDP messages to `<mixer-IP>:10024`, as specified in the [official X AIR Mix
 
 The set message uses the OSC float type tag `f`; the GET message has no arguments. The protocol document applies to firmware 1.11 or higher.
 
+The fader OSC float uses a piecewise dB taper. Decoding uses `40x - 30` for `x >= 0.5`, `80x - 50` for `x >= 0.25`, `160x - 70` for `x >= 0.0625`, and `480x - 90` below that, rounded to 0.1 dB. Values at or above `1.0` decode to `+10 dB`; values below `0.0` decode to the `-90 dB` floor. Encoding uses the inverse segments, with values below `-90 dB` mapped to `0.0` and values above `+10 dB` mapped to `1.0`.
+
 ## Mixer information
 
 Send `/xinfo ,` to request the mixer name, model, firmware version, server version, and IP address. The reply uses the `/xinfo` address and includes the device model, which can be used to select model-specific capabilities. The protocol also defines `/info`, whose reply omits the IP address.

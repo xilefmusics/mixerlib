@@ -28,11 +28,25 @@ Read a channel fader, replacing the placeholders with the mixer address and chan
 cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> get
 ```
 
+Append `db` to read the channel fader in decibels:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> get db
+```
+
 To set a fader, provide its value:
 
 ```sh
 cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> set <VALUE>
 ```
+
+Set a channel fader in decibels:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> set -6db
+```
+
+The `set` command accepts a normalized `0.0` to `1.0` value or a dB value with a `db` suffix. dB values use the X AIR fader taper (approximately -90 dB to +10 dB).
 
 The GET command prints the fader value. After building, the binary is available at `target/debug/mixinglib`:
 
@@ -51,6 +65,14 @@ fn read_fader(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<f32> {
 
 fn set_fader(mixer: &mut impl Mixer, channel: u8, value: f32) -> std::io::Result<()> {
     mixer.set_channel(channel, value)
+}
+
+fn read_fader_db(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<f32> {
+    mixer.get_channel_db(channel)
+}
+
+fn set_fader_db(mixer: &mut impl Mixer, channel: u8, value: f32) -> std::io::Result<()> {
+    mixer.set_channel_db(channel, value)
 }
 ```
 
