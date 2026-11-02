@@ -7,7 +7,7 @@ The `mixinglib` command-line program reads and changes mixer faders.
 Request mixer information:
 
 ```sh
-cargo run -- --ip <MIXER_IP> info
+cargo run -- -i <MIXER_IP> info
 ```
 
 The X AIR implementation requests `/xinfo` and prints the mixer name, model, firmware version, and IP address. It also prints the server version when the mixer provides it.
@@ -20,22 +20,24 @@ Build the project and CLI:
 cargo build
 ```
 
-Read a channel fader, replacing the placeholders with the supported family, mixer address, and channel:
+The `-m` (`--mixer-family`) option currently accepts `xair`. Use `-i` or `--ip` to provide the mixer address.
+
+Read a channel fader, replacing the placeholders with the mixer address and channel:
 
 ```sh
-cargo run -- --mixer-family <FAMILY> --ip <MIXER_IP> fader <CHANNEL> get
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> get
 ```
 
 To set a fader, provide its value:
 
 ```sh
-cargo run -- --mixer-family <FAMILY> --ip <MIXER_IP> fader <CHANNEL> set <VALUE>
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> set <VALUE>
 ```
 
 The GET command prints the fader value. After building, the binary is available at `target/debug/mixinglib`:
 
 ```sh
-./target/debug/mixinglib --mixer-family <FAMILY> --ip <MIXER_IP> fader <CHANNEL> get
+./target/debug/mixinglib -m xair -i <MIXER_IP> ch <CHANNEL> get
 ```
 
 Use the library API with a mixer implementation supplied by the caller:

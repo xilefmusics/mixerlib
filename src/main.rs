@@ -11,7 +11,7 @@ use mixerlib::{BehringerXAir, Mixer, MixerInfo};
     about = "Control a mixer over its network protocol"
 )]
 struct Cli {
-    #[arg(long, value_enum, default_value_t = MixerFamily::BehringerXAir)]
+    #[arg(short = 'm', long, value_enum, default_value_t = MixerFamily::BehringerXAir)]
     mixer_family: MixerFamily,
 
     #[arg(short, long, value_name = "IP")]
@@ -24,25 +24,26 @@ struct Cli {
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum MixerFamily {
     #[default]
+    #[value(name = "xair")]
     BehringerXAir,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
     Info,
-    Fader(FaderArgs),
+    Ch(ChannelArgs),
 }
 
 #[derive(Debug, Args)]
-struct FaderArgs {
+struct ChannelArgs {
     channel: u8,
 
     #[command(subcommand)]
-    action: FaderAction,
+    action: ChannelAction,
 }
 
 #[derive(Debug, Subcommand)]
-enum FaderAction {
+enum ChannelAction {
     Get,
     Set { value: f32 },
 }
@@ -78,9 +79,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Command::Info => print_info(mixer.info()?),
-        Command::Fader(FaderArgs { channel, action }) => match action {
-            FaderAction::Get => println!("{}", mixer.get_channel(channel)?),
-            FaderAction::Set { value } => {
+        Command::Ch(ChannelArgs { channel, action }) => match action {
+            ChannelAction::Get => println!("{}", mixer.get_channel(channel)?),
+            ChannelAction::Set { value } => {
                 mixer.set_channel(channel, value)?;
                 println!("ok");
             }

@@ -145,7 +145,6 @@ impl Mixer for BehringerXAir {
 
         let address = Self::channel_address(channel)?;
         self.send_message(&address, Some(value))?;
-        self.receive_fader_value(&address)?;
         Ok(())
     }
 }
