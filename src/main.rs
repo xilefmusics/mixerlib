@@ -63,14 +63,34 @@ struct ChannelSetArgs {
 
 #[derive(Debug, Subcommand)]
 enum ChannelSetAction {
-    Label { label: String },
+    Label {
+        label: String,
+    },
+    Gain {
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+    },
+    Mute {
+        value: String,
+    },
+    Solo {
+        value: String,
+    },
+    Pan {
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ChannelGetField {
     #[value(name = "db")]
     Db,
+    Gain,
     Label,
+    Mute,
+    Solo,
+    Pan,
 }
 
 fn main() -> ExitCode {
@@ -109,7 +129,13 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
                 Some(ChannelGetField::Db) => {
                     println!("{} dB", mixer.get_channel_db(channel)?);
                 }
+                Some(ChannelGetField::Gain) => {
+                    println!("{} dB", mixer.get_channel_gain(channel)?);
+                }
                 Some(ChannelGetField::Label) => println!("{}", mixer.get_channel_label(channel)?),
+                Some(ChannelGetField::Mute) => println!("{}", mixer.get_channel_mute(channel)?),
+                Some(ChannelGetField::Solo) => println!("{}", mixer.get_channel_solo(channel)?),
+                Some(ChannelGetField::Pan) => println!("{}", mixer.get_channel_pan(channel)?),
                 None => println!("{}", mixer.get_channel(channel)?),
             },
             ChannelAction::Set(args) => match (args.action, args.value) {
@@ -117,9 +143,25 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
                     mixer.set_channel_label(channel, &label)?;
                     println!("ok");
                 }
+                (Some(ChannelSetAction::Gain { value }), None) => {
+                    mixer.set_channel_gain(channel, parse_db_value(&value)?)?;
+                    println!("ok");
+                }
+                (Some(ChannelSetAction::Mute { value }), None) => {
+                    mixer.set_channel_mute(channel, parse_bool_value(&value)?)?;
+                    println!("ok");
+                }
+                (Some(ChannelSetAction::Solo { value }), None) => {
+                    mixer.set_channel_solo(channel, parse_bool_value(&value)?)?;
+                    println!("ok");
+                }
+                (Some(ChannelSetAction::Pan { value }), None) => {
+                    mixer.set_channel_pan(channel, value.parse::<f32>()?)?;
+                    println!("ok");
+                }
                 (None, Some(value)) => {
                     if value.to_ascii_lowercase().ends_with("db") {
-                        let decibels = value[..value.len() - 2].parse::<f32>()?;
+                        let decibels = parse_db_value(&value)?;
                         mixer.set_channel_db(channel, decibels)?;
                     } else {
                         let value = value.parse::<f32>()?;
@@ -127,17 +169,17 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
                     }
                     println!("ok");
                 }
-                (Some(ChannelSetAction::Label { .. }), Some(_)) => {
+                (Some(_), Some(_)) => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "unexpected fader value after channel label",
+                        "unexpected value after channel setting",
                     )
                     .into());
                 }
                 (None, None) => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "expected a fader value or `label <LABEL>`",
+                        "expected a fader value or a channel setting",
                     )
                     .into());
                 }
@@ -146,6 +188,26 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
     }
 
     Ok(())
+}
+
+fn parse_db_value(value: &str) -> Result<f32, Box<dyn std::error::Error>> {
+    let value = if value.to_ascii_lowercase().ends_with("db") {
+        &value[..value.len() - 2]
+    } else {
+        value
+    };
+    Ok(value.parse::<f32>()?)
+}
+
+fn parse_bool_value(value: &str) -> Result<bool, io::Error> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "on" | "1" => Ok(true),
+        "false" | "off" | "0" => Ok(false),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected true, false, on, off, 1, or 0",
+        )),
+    }
 }
 
 fn print_info(info: MixerInfo) {

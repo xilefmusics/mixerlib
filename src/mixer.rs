@@ -32,6 +32,62 @@ pub trait Mixer {
         ))
     }
 
+    fn get_channel_gain(&mut self, _channel: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel gain is not supported",
+        ))
+    }
+
+    fn set_channel_gain(&mut self, _channel: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting channel gain is not supported",
+        ))
+    }
+
+    fn get_channel_mute(&mut self, _channel: u8) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel mute is not supported",
+        ))
+    }
+
+    fn set_channel_mute(&mut self, _channel: u8, _muted: bool) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting channel mute is not supported",
+        ))
+    }
+
+    fn get_channel_solo(&mut self, _channel: u8) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel solo is not supported",
+        ))
+    }
+
+    fn set_channel_solo(&mut self, _channel: u8, _solo: bool) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting channel solo is not supported",
+        ))
+    }
+
+    fn get_channel_pan(&mut self, _channel: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel pan is not supported",
+        ))
+    }
+
+    fn set_channel_pan(&mut self, _channel: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting channel pan is not supported",
+        ))
+    }
+
     fn get_channel(&mut self, channel: u8) -> io::Result<f32>;
 
     fn set_channel(&mut self, channel: u8, value: f32) -> io::Result<()>;

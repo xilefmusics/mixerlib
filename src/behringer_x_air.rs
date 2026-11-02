@@ -39,6 +39,28 @@ impl BehringerXAir {
         Ok(format!("/ch/{channel:02}/{parameter}"))
     }
 
+    fn solo_address(channel: u8) -> io::Result<String> {
+        if !(1..=MAX_INPUT_CHANNEL).contains(&channel) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("channel must be between 1 and {MAX_INPUT_CHANNEL}"),
+            ));
+        }
+
+        Ok(format!("/-stat/solosw/{channel:02}"))
+    }
+
+    fn headamp_address(channel: u8) -> io::Result<String> {
+        if !(1..=MAX_INPUT_CHANNEL).contains(&channel) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("channel must be between 1 and {MAX_INPUT_CHANNEL}"),
+            ));
+        }
+
+        Ok(format!("/headamp/{channel:02}/gain"))
+    }
+
     fn send_message(&self, address: &str, value: Option<f32>) -> io::Result<()> {
         let mut packet = Vec::with_capacity(32 + address.len());
         append_osc_string(&mut packet, address);
@@ -72,7 +94,23 @@ impl BehringerXAir {
         Ok(())
     }
 
-    fn receive_fader_value(&self, expected_path: &str) -> io::Result<f32> {
+    fn send_int_message(&self, address: &str, value: Option<i32>) -> io::Result<()> {
+        let mut packet = Vec::with_capacity(32 + address.len());
+        append_osc_string(&mut packet, address);
+
+        match value {
+            Some(value) => {
+                append_osc_string(&mut packet, ",i");
+                packet.extend_from_slice(&value.to_be_bytes());
+            }
+            None => append_osc_string(&mut packet, ","),
+        }
+
+        self.socket.send(&packet)?;
+        Ok(())
+    }
+
+    fn receive_float_value(&self, expected_path: &str) -> io::Result<f32> {
         let deadline = Instant::now() + RESPONSE_TIMEOUT;
         let mut packet = [0_u8; MAX_PACKET_SIZE];
 
@@ -88,7 +126,7 @@ impl BehringerXAir {
 
             match self.socket.recv(&mut packet) {
                 Ok(packet_len) => {
-                    if let Some(value) = parse_fader_response(&packet[..packet_len], expected_path)?
+                    if let Some(value) = parse_float_response(&packet[..packet_len], expected_path)?
                     {
                         return Ok(value);
                     }
@@ -126,6 +164,41 @@ impl BehringerXAir {
                         parse_channel_label_response(&packet[..packet_len], expected_path)?
                     {
                         return Ok(label);
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn receive_channel_bool(&self, expected_path: &str) -> io::Result<bool> {
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
+        let mut packet = [0_u8; MAX_PACKET_SIZE];
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timed out waiting for X AIR OSC response",
+                ));
+            }
+            self.socket.set_read_timeout(Some(remaining))?;
+
+            match self.socket.recv(&mut packet) {
+                Ok(packet_len) => {
+                    if let Some(value) =
+                        parse_channel_bool_response(&packet[..packet_len], expected_path)?
+                    {
+                        return Ok(value);
                     }
                 }
                 Err(error)
@@ -192,10 +265,72 @@ impl Mixer for BehringerXAir {
         self.send_string_message(&address, label)
     }
 
+    fn get_channel_gain(&mut self, channel: u8) -> io::Result<f32> {
+        let address = Self::headamp_address(channel)?;
+        self.send_message(&address, None)?;
+        self.receive_float_value(&address)
+            .map(|value| (value * 72.0 - 12.0) * 2.0)
+            .map(|value| value.round() / 2.0)
+    }
+
+    fn set_channel_gain(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        if !value.is_finite() || !(-12.0..=60.0).contains(&value) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR channel gain must be between -12 dB and +60 dB",
+            ));
+        }
+
+        let address = Self::headamp_address(channel)?;
+        self.send_message(&address, Some((value + 12.0) / 72.0))?;
+        Ok(())
+    }
+
+    fn get_channel_mute(&mut self, channel: u8) -> io::Result<bool> {
+        let address = Self::channel_address(channel, "mix/on")?;
+        self.send_int_message(&address, None)?;
+        self.receive_channel_bool(&address).map(|on| !on)
+    }
+
+    fn set_channel_mute(&mut self, channel: u8, muted: bool) -> io::Result<()> {
+        let address = Self::channel_address(channel, "mix/on")?;
+        self.send_int_message(&address, Some(if muted { 0 } else { 1 }))
+    }
+
+    fn get_channel_solo(&mut self, channel: u8) -> io::Result<bool> {
+        let address = Self::solo_address(channel)?;
+        self.send_int_message(&address, None)?;
+        self.receive_channel_bool(&address)
+    }
+
+    fn set_channel_solo(&mut self, channel: u8, solo: bool) -> io::Result<()> {
+        let address = Self::solo_address(channel)?;
+        self.send_int_message(&address, Some(if solo { 1 } else { 0 }))
+    }
+
+    fn get_channel_pan(&mut self, channel: u8) -> io::Result<f32> {
+        let address = Self::channel_address(channel, "mix/pan")?;
+        self.send_message(&address, None)?;
+        self.receive_float_value(&address)
+    }
+
+    fn set_channel_pan(&mut self, channel: u8, value: f32) -> io::Result<()> {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR channel pan must be between 0.0 and 1.0",
+            ));
+        }
+
+        let address = Self::channel_address(channel, "mix/pan")?;
+        self.send_message(&address, Some(value))?;
+        Ok(())
+    }
+
     fn get_channel(&mut self, channel: u8) -> io::Result<f32> {
         let address = Self::channel_address(channel, "mix/fader")?;
         self.send_message(&address, None)?;
-        self.receive_fader_value(&address)
+        self.receive_float_value(&address)
     }
 
     fn set_channel(&mut self, channel: u8, value: f32) -> io::Result<()> {
@@ -273,6 +408,8 @@ fn append_osc_string(packet: &mut Vec<u8>, value: &str) {
 enum OscArgument {
     String(String),
     Float(f32),
+    Int(i32),
+    Bool(bool),
     Other,
 }
 
@@ -292,7 +429,11 @@ fn read_parameter_arguments(packet: &[u8], offset: &mut usize) -> io::Result<Vec
                 let bytes = read_bytes(packet, offset, 4)?;
                 OscArgument::Float(f32::from_be_bytes(bytes.try_into().unwrap()))
             }
-            'i' | 'c' | 'r' | 'm' => {
+            'i' => {
+                let bytes = read_bytes(packet, offset, 4)?;
+                OscArgument::Int(i32::from_be_bytes(bytes.try_into().unwrap()))
+            }
+            'c' | 'r' | 'm' => {
                 read_bytes(packet, offset, 4)?;
                 OscArgument::Other
             }
@@ -307,7 +448,9 @@ fn read_parameter_arguments(packet: &[u8], offset: &mut usize) -> io::Result<Vec
                 read_bytes(packet, offset, padded_length)?;
                 OscArgument::Other
             }
-            'T' | 'F' | 'N' | 'I' | '[' | ']' => OscArgument::Other,
+            'T' => OscArgument::Bool(true),
+            'F' => OscArgument::Bool(false),
+            'N' | 'I' | '[' | ']' => OscArgument::Other,
             unsupported => {
                 return Err(invalid_osc_data(&format!(
                     "unsupported OSC type tag `{unsupported}` in X AIR response"
@@ -320,7 +463,7 @@ fn read_parameter_arguments(packet: &[u8], offset: &mut usize) -> io::Result<Vec
     Ok(arguments)
 }
 
-fn parse_fader_response(packet: &[u8], expected_path: &str) -> io::Result<Option<f32>> {
+fn parse_float_response(packet: &[u8], expected_path: &str) -> io::Result<Option<f32>> {
     let mut offset = 0;
     let address = read_osc_string(packet, &mut offset)?;
     if address != "/status" && address != expected_path {
@@ -377,6 +520,58 @@ fn parse_channel_label_response(packet: &[u8], expected_path: &str) -> io::Resul
     }
 
     Ok(None)
+}
+
+fn parse_channel_bool_response(packet: &[u8], expected_path: &str) -> io::Result<Option<bool>> {
+    let mut offset = 0;
+    let address = read_osc_string(packet, &mut offset)?;
+    if address != "/status" && address != expected_path {
+        return Ok(None);
+    }
+
+    let arguments = read_parameter_arguments(packet, &mut offset)?;
+    if address == expected_path {
+        for argument in arguments {
+            if let Some(value) = bool_argument(argument) {
+                return value.map(Some);
+            }
+        }
+        return Ok(None);
+    }
+
+    for pair in arguments.windows(2) {
+        if matches!(&pair[1], OscArgument::String(path) if path == expected_path) {
+            return bool_argument_ref(&pair[0]).map(Some);
+        }
+    }
+
+    Ok(None)
+}
+
+fn bool_argument(argument: OscArgument) -> Option<io::Result<bool>> {
+    match argument {
+        OscArgument::Int(0) => Some(Ok(false)),
+        OscArgument::Int(1) => Some(Ok(true)),
+        OscArgument::Int(_) => Some(Err(invalid_osc_data(
+            "X AIR boolean response did not contain 0 or 1",
+        ))),
+        OscArgument::Bool(value) => Some(Ok(value)),
+        _ => None,
+    }
+}
+
+fn bool_argument_ref(argument: &OscArgument) -> io::Result<bool> {
+    match argument {
+        OscArgument::Int(0) => Ok(false),
+        OscArgument::Int(1) => Ok(true),
+        OscArgument::Int(_) => Err(invalid_osc_data(
+            "X AIR boolean response did not contain 0 or 1",
+        )),
+        OscArgument::Bool(value) => Ok(*value),
+        _ => Err(invalid_osc_data(
+            "X AIR boolean response did not contain an integer or boolean value",
+        )),
+    }
 }
 
 fn parse_info_response(packet: &[u8]) -> io::Result<Option<MixerInfo>> {

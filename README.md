@@ -1,8 +1,8 @@
 # mixerlib
 
-`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading channel labels and fader values and setting channel labels and fader values, with a network-connected mixer implementation.
+`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading and setting channel labels, preamp gain, fader level, mute, solo, and pan, with a network-connected mixer implementation.
 
-The `mixinglib` command-line program reads and changes channel labels and faders.
+The `mixinglib` command-line program reads and changes those channel controls.
 
 Request mixer information:
 
@@ -58,9 +58,32 @@ Set a channel label:
 cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> set label "Lead Vocals"
 ```
 
-The `set` command accepts a normalized `0.0` to `1.0` value or a dB value with a `db` suffix. dB values use the X AIR fader taper (approximately -90 dB to +10 dB).
+Read and set channel preamp gain in dB:
 
-The GET command prints the requested channel value or label. After building, the binary is available at `target/debug/mixinglib`:
+```sh
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> get gain
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> set gain 32
+```
+
+Read or set mute and solo. Boolean values accept `true`/`false`, `on`/`off`, or `1`/`0`:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> get mute
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> set mute on
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> get solo
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> set solo off
+```
+
+Read and set pan as a normalized value from `0.0` (left) to `1.0` (right), with `0.5` centered:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> get pan
+cargo run -- -m xair -i <MIXER_IP> ch <CHANNEL> set pan 0.5
+```
+
+The fader `set` command accepts a normalized `0.0` to `1.0` value or a dB value with a `db` suffix. Fader dB values use the X AIR fader taper (approximately -90 dB to +10 dB). Channel preamp gain accepts values from -12 dB to +60 dB.
+
+The GET command prints the requested channel value, state, or label. After building, the binary is available at `target/debug/mixinglib`:
 
 ```sh
 ./target/debug/mixinglib -m xair -i <MIXER_IP> ch <CHANNEL> get
@@ -85,6 +108,38 @@ fn read_fader_db(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<f32> {
 
 fn set_fader_db(mixer: &mut impl Mixer, channel: u8, value: f32) -> std::io::Result<()> {
     mixer.set_channel_db(channel, value)
+}
+
+fn read_gain(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<f32> {
+    mixer.get_channel_gain(channel)
+}
+
+fn set_gain(mixer: &mut impl Mixer, channel: u8, value_db: f32) -> std::io::Result<()> {
+    mixer.set_channel_gain(channel, value_db)
+}
+
+fn read_mute(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<bool> {
+    mixer.get_channel_mute(channel)
+}
+
+fn set_mute(mixer: &mut impl Mixer, channel: u8, muted: bool) -> std::io::Result<()> {
+    mixer.set_channel_mute(channel, muted)
+}
+
+fn read_solo(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<bool> {
+    mixer.get_channel_solo(channel)
+}
+
+fn set_solo(mixer: &mut impl Mixer, channel: u8, solo: bool) -> std::io::Result<()> {
+    mixer.set_channel_solo(channel, solo)
+}
+
+fn read_pan(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<f32> {
+    mixer.get_channel_pan(channel)
+}
+
+fn set_pan(mixer: &mut impl Mixer, channel: u8, value: f32) -> std::io::Result<()> {
+    mixer.set_channel_pan(channel, value)
 }
 ```
 
