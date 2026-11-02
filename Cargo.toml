@@ -8,6 +8,9 @@ readme = "README.md"
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
 [[bin]]
-name = "mixerlib"
+name = "mixinglib"
 path = "src/main.rs"

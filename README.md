@@ -1,34 +1,49 @@
 # mixerlib
 
-`mixerlib` is a Rust library project for working with audio mixers. The long-term aim is to make it easier to describe mixer controls, map them to device protocols, and build custom mixing applications on top.
+`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading and setting channel fader values, with a network-connected mixer implementation.
 
-The project is an early scaffold: the library has no mixer implementations or public API yet, and the included command-line program prints a greeting.
+The `mixinglib` command-line program reads and changes mixer faders.
 
 ## Getting started
 
-Build the project:
+Build the project and CLI:
 
 ```sh
 cargo build
 ```
 
-Run the example CLI:
+Read a channel fader, replacing the placeholders with the supported family, mixer address, and channel:
 
 ```sh
-cargo run
+cargo run -- --mixer-family <FAMILY> --ip <MIXER_IP> fader <CHANNEL> get
 ```
 
-It prints:
+To set a fader, provide its value:
 
-```text
-Hello, world!
+```sh
+cargo run -- --mixer-family <FAMILY> --ip <MIXER_IP> fader <CHANNEL> set <VALUE>
 ```
 
-## Project layout
+The GET command prints the fader value. After building, the binary is available at `target/debug/mixinglib`:
 
-- `src/lib.rs` — library crate documentation and future API entry point.
-- `src/main.rs` — small command-line binary.
+```sh
+./target/debug/mixinglib --mixer-family <FAMILY> --ip <MIXER_IP> fader <CHANNEL> get
+```
+
+Use the library API with a mixer implementation supplied by the caller:
+
+```rust
+use mixerlib::Mixer;
+
+fn read_fader(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<f32> {
+    mixer.get_channel(channel)
+}
+
+fn set_fader(mixer: &mut impl Mixer, channel: u8, value: f32) -> std::io::Result<()> {
+    mixer.set_channel(channel, value)
+}
+```
 
 ## Direction
 
-Possible building blocks for the library include mixer and control descriptions, protocol-specific mappings, and shared types that custom apps can use to read or change mixer state. Device support and API design are still to be defined.
+The library can grow to support additional mixer families and controls while keeping a shared API for custom applications.

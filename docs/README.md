@@ -6,18 +6,18 @@ The tables list major digital mixer lines. A blank protocol cell means no genera
 
 | Mixer | Protocol |
 | --- | --- |
-| [X32](https://cdn-media.empowertribe.com/e452c7959c0d4002908c23044a9558a7/8849399545886.pdf) | [OSC](protocols/OSC.md) |
-| [X32 COMPACT](https://cdn-media.empowertribe.com/13241f187345464c84d59367d5ea4e54/8849797021726.pdf) | [OSC](protocols/OSC.md) |
-| [X32 PRODUCER](https://cdn-media.empowertribe.com/2cfef5bd1a124d4a876562b55dc81806/8849385750558.pdf) | [OSC](protocols/OSC.md) |
-| [X32 RACK](https://cdn-media.empowertribe.com/1cac2faf617a4c548ffd4dc893ec4ebb/8849854726174.pdf) | [OSC](protocols/OSC.md) |
-| [X32 CORE](https://cdn-media.empowertribe.com/c03243eef6284239893fa4b535db4739/8849402396702.pdf) | [OSC](protocols/OSC.md) |
-| [X AIR X18](https://cdn-media.empowertribe.com/ffe0de45e14541f797928d639a8933b2/M_BE_0605-AAA_X-AIR_EN.pdf) | [OSC](protocols/OSC.md) |
-| [X AIR XR18](https://cdn-media.empowertribe.com/ffe0de45e14541f797928d639a8933b2/M_BE_0605-AAA_X-AIR_EN.pdf) | [OSC](protocols/OSC.md) |
-| [X AIR XR16](https://cdn-media.empowertribe.com/ffe0de45e14541f797928d639a8933b2/M_BE_0605-AAA_X-AIR_EN.pdf) | [OSC](protocols/OSC.md) |
-| [X AIR XR12](https://cdn-media.empowertribe.com/ffe0de45e14541f797928d639a8933b2/M_BE_0605-AAA_X-AIR_EN.pdf) | [OSC](protocols/OSC.md) |
-| [WING](https://cdn-media.empowertribe.com/25951c6f808c0a79abc407c07d5639d1/User-Manual_WING-series_2025-10-20.pdf) | [OSC](protocols/OSC.md) |
-| [WING COMPACT](https://cdn-media.empowertribe.com/25951c6f808c0a79abc407c07d5639d1/User-Manual_WING-series_2025-10-20.pdf) | [OSC](protocols/OSC.md) |
-| [WING RACK](https://cdn-media.empowertribe.com/25951c6f808c0a79abc407c07d5639d1/User-Manual_WING-series_2025-10-20.pdf) | [OSC](protocols/OSC.md) |
+| [X32](https://cdn-media.empowertribe.com/e452c7959c0d4002908c23044a9558a7/8849399545886.pdf) | OSC |
+| [X32 COMPACT](https://cdn-media.empowertribe.com/13241f187345464c84d59367d5ea4e54/8849797021726.pdf) | OSC |
+| [X32 PRODUCER](https://cdn-media.empowertribe.com/2cfef5bd1a124d4a876562b55dc81806/8849385750558.pdf) | OSC |
+| [X32 RACK](https://cdn-media.empowertribe.com/1cac2faf617a4c548ffd4dc893ec4ebb/8849854726174.pdf) | OSC |
+| [X32 CORE](https://cdn-media.empowertribe.com/c03243eef6284239893fa4b535db4739/8849402396702.pdf) | OSC |
+| [X AIR X18](https://cdn-media.empowertribe.com/ffe0de45e14541f797928d639a8933b2/M_BE_0605-AAA_X-AIR_EN.pdf) | [Behringer X Air (OSC)](protocols/Behringer%20X%20Air%20%28OSC%29.md) |
+| [X AIR XR18](https://cdn-media.empowertribe.com/ffe0de45e14541f797928d639a8933b2/M_BE_0605-AAA_X-AIR_EN.pdf) | [Behringer X Air (OSC)](protocols/Behringer%20X%20Air%20%28OSC%29.md) |
+| [X AIR XR16](https://cdn-media.empowertribe.com/ffe0de45e14541f797928d639a8933b2/M_BE_0605-AAA_X-AIR_EN.pdf) | [Behringer X Air (OSC)](protocols/Behringer%20X%20Air%20%28OSC%29.md) |
+| [X AIR XR12](https://cdn-media.empowertribe.com/ffe0de45e14541f797928d639a8933b2/M_BE_0605-AAA_X-AIR_EN.pdf) | [Behringer X Air (OSC)](protocols/Behringer%20X%20Air%20%28OSC%29.md) |
+| [WING](https://cdn-media.empowertribe.com/25951c6f808c0a79abc407c07d5639d1/User-Manual_WING-series_2025-10-20.pdf) | OSC |
+| [WING COMPACT](https://cdn-media.empowertribe.com/25951c6f808c0a79abc407c07d5639d1/User-Manual_WING-series_2025-10-20.pdf) | OSC |
+| [WING RACK](https://cdn-media.empowertribe.com/25951c6f808c0a79abc407c07d5639d1/User-Manual_WING-series_2025-10-20.pdf) | OSC |
 | [FLOW 8](https://cdn-media.empowertribe.com/d1517b2a8e7d4a2ab05f823c306facc8/QSG_BE_0603-AEW_FLOW-8_WW.pdf) | |
 
 ## Allen & Heath
@@ -57,12 +57,12 @@ The tables list major digital mixer lines. A blank protocol cell means no genera
 
 | Mixer | Protocol |
 | --- | --- |
-| [RIVAGE PM series](https://usa.yamaha.com/products/proaudio/mixers/rivage_pm/downloads.html) | [OSC](protocols/OSC.md) ([Yamaha OSC specifications](https://usa.yamaha.com/products/proaudio/mixers/rivage_pm/downloads.html)) |
-| [DM7](https://usa.yamaha.com/products/proaudio/mixers/dm7/downloads.html) | [OSC](protocols/OSC.md) ([Yamaha DM Series OSC specifications](https://usa.yamaha.com/products/proaudio/mixers/dm7/downloads.html)) |
-| [DM7 Compact](https://usa.yamaha.com/products/proaudio/mixers/dm7/downloads.html) | [OSC](protocols/OSC.md) ([Yamaha DM Series OSC specifications](https://usa.yamaha.com/products/proaudio/mixers/dm7/downloads.html)) |
-| [DM5](https://usa.yamaha.com/products/proaudio/mixers/dm5/downloads.html) | [OSC](protocols/OSC.md) ([Yamaha DM Series OSC specifications](https://usa.yamaha.com/products/proaudio/mixers/dm5/downloads.html)) |
-| [DM3](https://usa.yamaha.com/products/proaudio/mixers/dm3/downloads.html) | [OSC](protocols/OSC.md) ([Yamaha DM Series OSC specifications](https://usa.yamaha.com/products/proaudio/mixers/dm3/downloads.html)) |
-| [DM3-D](https://usa.yamaha.com/products/proaudio/mixers/dm3/downloads.html) | [OSC](protocols/OSC.md) ([Yamaha DM Series OSC specifications](https://usa.yamaha.com/products/proaudio/mixers/dm3/downloads.html)) |
+| [RIVAGE PM series](https://usa.yamaha.com/products/proaudio/mixers/rivage_pm/downloads.html) | OSC ([Yamaha OSC specifications](https://usa.yamaha.com/products/proaudio/mixers/rivage_pm/downloads.html)) |
+| [DM7](https://usa.yamaha.com/products/proaudio/mixers/dm7/downloads.html) | OSC ([Yamaha DM Series OSC specifications](https://usa.yamaha.com/products/proaudio/mixers/dm7/downloads.html)) |
+| [DM7 Compact](https://usa.yamaha.com/products/proaudio/mixers/dm7/downloads.html) | OSC ([Yamaha DM Series OSC specifications](https://usa.yamaha.com/products/proaudio/mixers/dm7/downloads.html)) |
+| [DM5](https://usa.yamaha.com/products/proaudio/mixers/dm5/downloads.html) | OSC ([Yamaha DM Series OSC specifications](https://usa.yamaha.com/products/proaudio/mixers/dm5/downloads.html)) |
+| [DM3](https://usa.yamaha.com/products/proaudio/mixers/dm3/downloads.html) | OSC ([Yamaha DM Series OSC specifications](https://usa.yamaha.com/products/proaudio/mixers/dm3/downloads.html)) |
+| [DM3-D](https://usa.yamaha.com/products/proaudio/mixers/dm3/downloads.html) | OSC ([Yamaha DM Series OSC specifications](https://usa.yamaha.com/products/proaudio/mixers/dm3/downloads.html)) |
 | [TF5](https://usa.yamaha.com/products/proaudio/mixers/tf/downloads.html) | |
 | [TF3](https://usa.yamaha.com/products/proaudio/mixers/tf/downloads.html) | |
 | [TF1](https://usa.yamaha.com/products/proaudio/mixers/tf/downloads.html) | |
@@ -77,13 +77,13 @@ The tables list major digital mixer lines. A blank protocol cell means no genera
 
 | Mixer | Protocol |
 | --- | --- |
-| [M32](https://midasconsoles.com/en/products/0603-ADX) | [OSC](protocols/OSC.md) |
-| [M32 LIVE](https://midasconsoles.com/en/products/0603-AEO) | [OSC](protocols/OSC.md) |
-| [M32R](https://midasconsoles.com/en/products/0603-AEF) | [OSC](protocols/OSC.md) |
-| [M32R LIVE](https://midasconsoles.com/en/products/0603-AEP) | [OSC](protocols/OSC.md) |
-| [M32C](https://www.midasconsoles.com/en/products/0604-AAC) | [OSC](protocols/OSC.md) |
-| [MR18](https://www.midasconsoles.com/en/products/0605-AAF) | [OSC](protocols/OSC.md) |
-| [MR12](https://midasconsoles.com/en/products/0605-AAE) | [OSC](protocols/OSC.md) |
+| [M32](https://midasconsoles.com/en/products/0603-ADX) | OSC |
+| [M32 LIVE](https://midasconsoles.com/en/products/0603-AEO) | OSC |
+| [M32R](https://midasconsoles.com/en/products/0603-AEF) | OSC |
+| [M32R LIVE](https://midasconsoles.com/en/products/0603-AEP) | OSC |
+| [M32C](https://www.midasconsoles.com/en/products/0604-AAC) | OSC |
+| [MR18](https://www.midasconsoles.com/en/products/0605-AAF) | OSC |
+| [MR12](https://midasconsoles.com/en/products/0605-AAE) | OSC |
 
 ## Soundcraft
 
