@@ -18,6 +18,12 @@ Send UDP messages to `<mixer-IP>:10024`, as specified in the [official X AIR Mix
 | Set Main LR fader to value `x` | `/lr/mix/fader ,f x` |
 | GET FX return `n` fader | `/rtn/n/mix/fader ,` for FX returns 1–4 |
 | Set FX return `n` fader to value `x` | `/rtn/n/mix/fader ,f x` for FX returns 1–4 |
+| GET channel `n` bus send `b` level/state | `/ch/nn/mix/bb/level ,` and `/ch/nn/mix/bb/on ,` for buses 1–6 |
+| Set channel `n` bus send `b` level/state | `/ch/nn/mix/bb/level ,f x` and `/ch/nn/mix/bb/on ,i x` |
+| GET channel `n` FX send `f` level/state | `/ch/nn/mix/mm/level ,` and `/ch/nn/mix/mm/on ,` where `mm = f + 6` |
+| Set channel `n` FX send `f` level/state | `/ch/nn/mix/mm/level ,f x` and `/ch/nn/mix/mm/on ,i x` for FX sends 1–4 |
+| GET stereo Aux bus send `b` level | `/rtn/aux/mix/bb/level ,` for buses 1–6 |
+| Set stereo Aux bus send `b` level | `/rtn/aux/mix/bb/level ,f x` |
 | GET channel `n` preamp gain | `/headamp/nn/gain ,` (no arguments) |
 | Set channel `n` preamp gain to normalized value `x` | `/headamp/nn/gain ,f x` |
 | GET channel `n` mute state | `/ch/nn/mix/on ,` (no arguments) |
@@ -70,8 +76,19 @@ The `BehringerXAir` implementation maps the public `Mixer` trait methods to thes
 | `subscribe_aux_fader_updates()` | `/xremote ,` | Streams fader changes for the stereo Aux input as `ChannelUpdate::Fader`. |
 | `subscribe_main_fader_updates()` | `/xremote ,` | Streams fader changes for Main LR as `ChannelUpdate::Fader`. |
 | `subscribe_fx_return_fader_updates(fx)` | `/xremote ,` | Streams fader changes for FX return 1–4 as `ChannelUpdate::Fader`. |
+| `get_channel_bus_send(channel, bus)` / `set_channel_bus_send(channel, bus, value)` | `/ch/nn/mix/bb/level` | Reads or sets normalized send level for buses 1–6. Values must be finite and from `0.0` to `1.0`. |
+| `get_channel_bus_send_db(channel, bus)` / `set_channel_bus_send_db(channel, bus, value)` | `/ch/nn/mix/bb/level` | Reads or sets the send level using the X AIR fader dB taper. dB writes accept finite values and clamp through the shared taper. |
+| `get_channel_bus_send_enabled(channel, bus)` / `set_channel_bus_send_enabled(channel, bus, enabled)` | `/ch/nn/mix/bb/on` | Reads or sets whether the channel send to bus 1–6 is on. |
+| `subscribe_channel_bus_send_updates(channel, bus)` | `/xremote ,` | Streams level and enabled-state changes for the selected send as `SendUpdate` values. |
+| `get_channel_fx_send(channel, fx)` / `set_channel_fx_send(channel, fx, value)` | `/ch/nn/mix/mm/level`, `mm = fx + 6` | Reads or sets normalized send level for FX sends 1–4. Values must be finite and from `0.0` to `1.0`. |
+| `get_channel_fx_send_db(channel, fx)` / `set_channel_fx_send_db(channel, fx, value)` | `/ch/nn/mix/mm/level`, `mm = fx + 6` | Reads or sets the send level using the X AIR fader dB taper. |
+| `get_channel_fx_send_enabled(channel, fx)` / `set_channel_fx_send_enabled(channel, fx, enabled)` | `/ch/nn/mix/mm/on`, `mm = fx + 6` | Reads or sets whether the channel FX send 1–4 is on. |
+| `subscribe_channel_fx_send_updates(channel, fx)` | `/xremote ,` | Streams level and enabled-state changes for the selected FX send as `SendUpdate` values. |
+| `get_aux_bus_send(bus)` / `set_aux_bus_send(bus, value)` | `/rtn/aux/mix/bb/level` | Reads or sets normalized Aux-to-bus send level for buses 1–6. Values must be finite and from `0.0` to `1.0`. |
+| `get_aux_bus_send_db(bus)` / `set_aux_bus_send_db(bus, value)` | `/rtn/aux/mix/bb/level` | Reads or sets Aux-to-bus send level using the X AIR fader dB taper. |
+| `subscribe_aux_bus_send_updates(bus)` | `/xremote ,` | Streams Aux bus send level updates as `SendUpdate::Level`. |
 
-The implementation accepts channel numbers from `1` to `16` for channel controls. The stereo Aux input, Main LR, and FX returns have separate fader methods and use `/rtn/aux/mix/fader`, `/lr/mix/fader`, and `/rtn/{fx}/mix/fader`, respectively. FX return numbers range from `1` to `4`. Gain, fader, pan, label, mute, and solo reads receive a `/status` reply containing the value followed by its OSC path, or a reply that uses the requested OSC path directly and contains just the value. Float values use the `f` type tag, mute and solo values use the `i` type tag, and labels use the `s` type tag. Writes send one UDP message and do not wait for a mixer acknowledgement. Gain values are translated linearly between the mixer’s normalized OSC range and its -12 dB to +60 dB control range; reads are rounded to the mixer’s 0.5 dB gain step.
+The implementation accepts channel numbers from `1` to `16` for channel controls and sends. The stereo Aux input, Main LR, and FX returns have separate fader methods and use `/rtn/aux/mix/fader`, `/lr/mix/fader`, and `/rtn/{fx}/mix/fader`, respectively. FX return numbers range from `1` to `4`. Gain, fader, send level, pan, label, mute, solo, and enabled-state reads receive a `/status` reply containing the value followed by its OSC path, or a reply that uses the requested OSC path directly and contains just the value. Float values use the `f` type tag, mute, solo, and send-enabled values use the `i` type tag, and labels use the `s` type tag. Writes send one UDP message and do not wait for a mixer acknowledgement. Gain values are translated linearly between the mixer’s normalized OSC range and its -12 dB to +60 dB control range; reads are rounded to the mixer’s 0.5 dB gain step.
 
 ## Channel meter subscriptions
 
@@ -84,6 +101,14 @@ The stream resends its subscription every five seconds while it is being read. `
 `subscribe_channel_updates(channel)` uses a separate UDP socket and sends `/xremote ,` to receive pushed parameter changes. The mixer sends changes for all parameters to that socket, and the library filters the updates to the requested channel. It decodes label, gain, mute, solo, pan, and fader changes into `ChannelUpdate` values. Gain updates use the same dB conversion and 0.5 dB rounding as `get_channel_gain()`. Mute updates invert the OSC `on` value. Fader updates include both the normalized value and its dB conversion.
 
 `subscribe_aux_fader_updates()`, `subscribe_main_fader_updates()`, and `subscribe_fx_return_fader_updates(fx)` use separate `/xremote ,` subscriptions and filter pushed messages to the selected fader path. They return fader changes as `ChannelUpdate::Fader` with normalized and dB values. FX return numbers must be from `1` to `4`.
+
+## Bus and effect sends
+
+Channel bus sends use `/ch/{channel:02}/mix/{bus:02}/level` and `/on`, with channel numbers 1–16 and bus numbers 1–6. Channel FX sends use the same paths with mix destination numbers 7–10 for FX sends 1–4. Level reads and updates include the normalized OSC value and its dB conversion; dB writes use the same finite-value check and taper as fader dB writes. Enabled-state reads and writes use OSC integer values `0` and `1`.
+
+`subscribe_channel_bus_send_updates(channel, bus)` and `subscribe_channel_fx_send_updates(channel, fx)` use dedicated `/xremote` sockets and filter updates to the selected level and enabled-state paths. They return `SendUpdate::Level { value, db }` or `SendUpdate::Enabled(bool)`. Subscriptions are renewed every five seconds while `SendUpdateStream::recv()` is called, use the one-second response timeout, and stop when the stream is dropped.
+
+The stereo Aux input supports bus send levels at `/rtn/aux/mix/{bus:02}/level`. The X AIR implementation does not expose per-send Aux enabled-state operations because its documented control is a group flag, and it does not expose Aux-to-FX operations. The corresponding `Mixer` methods exist and return `Unsupported` for these operations. Other mixer implementations may provide them.
 
 The stream reports changes received after it is opened; it does not provide an initial channel snapshot. Use the corresponding GET methods to read the starting state. The subscription is renewed every five seconds while `ChannelUpdateStream::recv()` is being called. A receive with no matching change uses the library’s one-second timeout. Dropping the stream stops renewals, and the mixer expires the subscription after ten seconds. The protocol allows up to eight active `/xremote` clients.
 

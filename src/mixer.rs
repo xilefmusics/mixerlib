@@ -34,6 +34,16 @@ pub trait ChannelUpdateStream {
     fn recv(&mut self) -> io::Result<ChannelUpdate>;
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum SendUpdate {
+    Level { value: f32, db: f32 },
+    Enabled(bool),
+}
+
+pub trait SendUpdateStream {
+    fn recv(&mut self) -> io::Result<SendUpdate>;
+}
+
 pub trait Mixer {
     fn info(&mut self) -> io::Result<MixerInfo> {
         Err(io::Error::new(
@@ -130,6 +140,223 @@ pub trait Mixer {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "channel updates are not supported",
+        ))
+    }
+
+    fn get_channel_bus_send(&mut self, _channel: u8, _bus: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel bus sends are not supported",
+        ))
+    }
+
+    fn set_channel_bus_send(&mut self, _channel: u8, _bus: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting channel bus sends is not supported",
+        ))
+    }
+
+    fn get_channel_bus_send_db(&mut self, _channel: u8, _bus: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel bus send dB is not supported",
+        ))
+    }
+
+    fn set_channel_bus_send_db(&mut self, _channel: u8, _bus: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting channel bus sends in dB is not supported",
+        ))
+    }
+
+    fn get_channel_bus_send_enabled(&mut self, _channel: u8, _bus: u8) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel bus send state is not supported",
+        ))
+    }
+
+    fn set_channel_bus_send_enabled(
+        &mut self,
+        _channel: u8,
+        _bus: u8,
+        _enabled: bool,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting channel bus send state is not supported",
+        ))
+    }
+
+    fn subscribe_channel_bus_send_updates(
+        &mut self,
+        _channel: u8,
+        _bus: u8,
+    ) -> io::Result<Box<dyn SendUpdateStream>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel bus send updates are not supported",
+        ))
+    }
+
+    fn get_channel_fx_send(&mut self, _channel: u8, _fx: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel FX sends are not supported",
+        ))
+    }
+
+    fn set_channel_fx_send(&mut self, _channel: u8, _fx: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting channel FX sends is not supported",
+        ))
+    }
+
+    fn get_channel_fx_send_db(&mut self, _channel: u8, _fx: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel FX send dB is not supported",
+        ))
+    }
+
+    fn set_channel_fx_send_db(&mut self, _channel: u8, _fx: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting channel FX sends in dB is not supported",
+        ))
+    }
+
+    fn get_channel_fx_send_enabled(&mut self, _channel: u8, _fx: u8) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel FX send state is not supported",
+        ))
+    }
+
+    fn set_channel_fx_send_enabled(
+        &mut self,
+        _channel: u8,
+        _fx: u8,
+        _enabled: bool,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting channel FX send state is not supported",
+        ))
+    }
+
+    fn subscribe_channel_fx_send_updates(
+        &mut self,
+        _channel: u8,
+        _fx: u8,
+    ) -> io::Result<Box<dyn SendUpdateStream>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "channel FX send updates are not supported",
+        ))
+    }
+
+    fn get_aux_bus_send(&mut self, _bus: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Aux bus sends are not supported",
+        ))
+    }
+
+    fn set_aux_bus_send(&mut self, _bus: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting Aux bus sends is not supported",
+        ))
+    }
+
+    fn get_aux_bus_send_db(&mut self, _bus: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Aux bus send dB is not supported",
+        ))
+    }
+
+    fn set_aux_bus_send_db(&mut self, _bus: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting Aux bus sends in dB is not supported",
+        ))
+    }
+
+    fn get_aux_bus_send_enabled(&mut self, _bus: u8) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Aux bus send state is not supported",
+        ))
+    }
+
+    fn set_aux_bus_send_enabled(&mut self, _bus: u8, _enabled: bool) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting Aux bus send state is not supported",
+        ))
+    }
+
+    fn subscribe_aux_bus_send_updates(
+        &mut self,
+        _bus: u8,
+    ) -> io::Result<Box<dyn SendUpdateStream>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Aux bus send updates are not supported",
+        ))
+    }
+
+    fn get_aux_fx_send(&mut self, _fx: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Aux FX sends are not supported",
+        ))
+    }
+
+    fn set_aux_fx_send(&mut self, _fx: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting Aux FX sends is not supported",
+        ))
+    }
+
+    fn get_aux_fx_send_db(&mut self, _fx: u8) -> io::Result<f32> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Aux FX send dB is not supported",
+        ))
+    }
+
+    fn set_aux_fx_send_db(&mut self, _fx: u8, _value: f32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting Aux FX sends in dB is not supported",
+        ))
+    }
+
+    fn get_aux_fx_send_enabled(&mut self, _fx: u8) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Aux FX send state is not supported",
+        ))
+    }
+
+    fn set_aux_fx_send_enabled(&mut self, _fx: u8, _enabled: bool) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "setting Aux FX send state is not supported",
+        ))
+    }
+
+    fn subscribe_aux_fx_send_updates(&mut self, _fx: u8) -> io::Result<Box<dyn SendUpdateStream>> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Aux FX send updates are not supported",
         ))
     }
 
@@ -279,5 +506,18 @@ mod tests {
     fn unsupported_mixer_reports_metering_as_unsupported() {
         let error = BasicMixer.get_channel_meter(1).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn unsupported_mixer_reports_send_operations_as_unsupported() {
+        let mut mixer = BasicMixer;
+        assert_eq!(
+            mixer.get_channel_bus_send(1, 1).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            mixer.get_aux_fx_send(1).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
     }
 }

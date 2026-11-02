@@ -1,8 +1,8 @@
 # mixerlib
 
-`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading channel meters, labels, preamp gain, fader level, mute, solo, and pan; subscribing to meter samples and channel control changes; and setting channel labels, preamp gain, fader level, mute, solo, and pan.
+`mixerlib` is a Rust library for working with audio mixers. It exposes a `Mixer` trait for reading channel meters, labels, preamp gain, fader level, mute, solo, pan, and bus/effect send levels and states; subscribing to meter samples and control changes; and setting these controls.
 
-The `mixinglib` command-line program reads channel meters and controls, subscribes to meter and control changes, and changes channel controls.
+The `mixinglib` command-line program reads channel meters and controls, subscribes to meter and control changes, and changes channel controls and sends.
 
 Request mixer information:
 
@@ -93,6 +93,26 @@ Subscribe to fader changes for Aux, Main LR, or an FX return. Stop the stream wi
 cargo run -- -m xair -i <MIXER_IP> aux subscribe
 cargo run -- -m xair -i <MIXER_IP> main subscribe
 cargo run -- -m xair -i <MIXER_IP> fx 2 subscribe
+```
+
+Read, set, and subscribe to channel bus and effect sends. Bus numbers range from 1 to 6; FX send numbers range from 1 to 4. Levels accept normalized values from `0.0` to `1.0` or dB values with a `db` suffix. Use `enabled` to read or set a send's on/off state. A subscription prints both level and enabled-state changes:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> ch 3 send bus 1 get
+cargo run -- -m xair -i <MIXER_IP> ch 3 send bus 1 get db
+cargo run -- -m xair -i <MIXER_IP> ch 3 send bus 1 set -6db
+cargo run -- -m xair -i <MIXER_IP> ch 3 send bus 1 get enabled
+cargo run -- -m xair -i <MIXER_IP> ch 3 send bus 1 set enabled off
+cargo run -- -m xair -i <MIXER_IP> ch 3 send bus 1 subscribe
+cargo run -- -m xair -i <MIXER_IP> ch 3 send fx 2 set 0.5
+```
+
+The stereo Aux input supports bus send levels. Its per-send enabled state and Aux-to-FX sends are not supported by the X AIR implementation because the documented OSC controls do not expose those individual send paths. The CLI accepts the same Aux send form and reports unsupported operations:
+
+```sh
+cargo run -- -m xair -i <MIXER_IP> aux send bus 1 get
+cargo run -- -m xair -i <MIXER_IP> aux send bus 1 subscribe
+cargo run -- -m xair -i <MIXER_IP> aux send fx 2 get
 ```
 
 Set a channel label:
@@ -207,6 +227,19 @@ fn set_pan(mixer: &mut impl Mixer, channel: u8, value: f32) -> std::io::Result<(
     mixer.set_channel_pan(channel, value)
 }
 
+fn read_bus_send(mixer: &mut impl Mixer, channel: u8, bus: u8) -> std::io::Result<f32> {
+    mixer.get_channel_bus_send(channel, bus)
+}
+
+fn set_fx_send_db(
+    mixer: &mut impl Mixer,
+    channel: u8,
+    fx: u8,
+    value: f32,
+) -> std::io::Result<()> {
+    mixer.set_channel_fx_send_db(channel, fx, value)
+}
+
 fn read_meter(mixer: &mut impl Mixer, channel: u8) -> std::io::Result<mixerlib::ChannelMeter> {
     mixer.get_channel_meter(channel)
 }
@@ -223,6 +256,20 @@ fn stream_channel_updates(mixer: &mut impl Mixer, channel: u8) -> std::io::Resul
     let mut stream = mixer.subscribe_channel_updates(channel)?;
     loop {
         let update: ChannelUpdate = stream.recv()?;
+        println!("{update:?}");
+    }
+}
+```
+
+Send subscriptions use `SendUpdateStream` and return `SendUpdate::Level { value, db }` or `SendUpdate::Enabled(bool)`:
+
+```rust
+use mixerlib::{Mixer, SendUpdate};
+
+fn stream_bus_send(mixer: &mut impl Mixer, channel: u8, bus: u8) -> std::io::Result<()> {
+    let mut stream = mixer.subscribe_channel_bus_send_updates(channel, bus)?;
+    loop {
+        let update: SendUpdate = stream.recv()?;
         println!("{update:?}");
     }
 }

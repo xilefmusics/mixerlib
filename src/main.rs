@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use mixerlib::{BehringerXAir, ChannelMeter, ChannelUpdate, Mixer, MixerInfo};
+use mixerlib::{BehringerXAir, ChannelMeter, ChannelUpdate, Mixer, MixerInfo, SendUpdate};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -33,7 +33,7 @@ enum MixerFamily {
 enum Command {
     Info,
     Ch(ChannelArgs),
-    Aux(FaderArgs),
+    Aux(AuxArgs),
     Main(FaderArgs),
     Fx(FxArgs),
 }
@@ -50,6 +50,26 @@ struct ChannelArgs {
 struct FaderArgs {
     #[command(subcommand)]
     action: FaderAction,
+}
+
+#[derive(Debug, Args)]
+struct AuxArgs {
+    #[command(subcommand)]
+    action: AuxAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum AuxAction {
+    Get {
+        #[arg(value_enum)]
+        field: Option<FaderGetField>,
+    },
+    Set {
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+    },
+    Subscribe,
+    Send(SendArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -84,6 +104,51 @@ enum ChannelAction {
         #[arg(value_enum)]
         field: ChannelSubscribeField,
     },
+    Send(SendArgs),
+}
+
+#[derive(Debug, Args)]
+struct SendArgs {
+    #[command(subcommand)]
+    destination: SendDestinationArgs,
+}
+
+#[derive(Debug, Subcommand)]
+enum SendDestinationArgs {
+    Bus(SendTargetArgs),
+    Fx(SendTargetArgs),
+}
+
+#[derive(Debug, Args)]
+struct SendTargetArgs {
+    number: u8,
+
+    #[command(subcommand)]
+    action: SendAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum SendAction {
+    Get {
+        #[arg(value_enum)]
+        field: Option<SendGetField>,
+    },
+    Set(SendSetArgs),
+    Subscribe,
+}
+
+#[derive(Debug, Args)]
+struct SendSetArgs {
+    #[command(subcommand)]
+    action: Option<SendSetAction>,
+
+    #[arg(allow_hyphen_values = true)]
+    value: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum SendSetAction {
+    Enabled { value: String },
 }
 
 #[derive(Debug, Args)]
@@ -135,6 +200,13 @@ enum FaderGetField {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
+enum SendGetField {
+    #[value(name = "db")]
+    Db,
+    Enabled,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
 enum ChannelSubscribeField {
     Controls,
     Meter,
@@ -144,6 +216,18 @@ enum ChannelSubscribeField {
 enum FaderTarget {
     Aux,
     Main,
+    Fx(u8),
+}
+
+#[derive(Clone, Copy)]
+enum SendSource {
+    Channel(u8),
+    Aux,
+}
+
+#[derive(Clone, Copy)]
+enum SendDestination {
+    Bus(u8),
     Fx(u8),
 }
 
@@ -178,7 +262,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Command::Info => print_info(mixer.info()?),
-        Command::Aux(FaderArgs { action }) => run_fader_action(mixer, FaderTarget::Aux, action)?,
+        Command::Aux(AuxArgs { action }) => match action {
+            AuxAction::Get { field } => {
+                run_fader_action(mixer, FaderTarget::Aux, FaderAction::Get { field })?;
+            }
+            AuxAction::Set { value } => {
+                run_fader_action(mixer, FaderTarget::Aux, FaderAction::Set { value })?;
+            }
+            AuxAction::Subscribe => {
+                run_fader_action(mixer, FaderTarget::Aux, FaderAction::Subscribe)?
+            }
+            AuxAction::Send(args) => run_send_args(mixer, SendSource::Aux, args)?,
+        },
         Command::Main(FaderArgs { action }) => run_fader_action(mixer, FaderTarget::Main, action)?,
         Command::Fx(FxArgs { fx, action }) => {
             run_fader_action(mixer, FaderTarget::Fx(fx), action)?;
@@ -293,10 +388,245 @@ fn run_command(mixer: &mut impl Mixer, command: Command) -> Result<(), Box<dyn s
                     }
                 }
             },
+            ChannelAction::Send(args) => run_send_args(mixer, SendSource::Channel(channel), args)?,
         },
     }
 
     Ok(())
+}
+
+fn run_send_args(
+    mixer: &mut impl Mixer,
+    source: SendSource,
+    args: SendArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (destination, target) = match args.destination {
+        SendDestinationArgs::Bus(SendTargetArgs { number, action }) => {
+            (SendDestination::Bus(number), action)
+        }
+        SendDestinationArgs::Fx(SendTargetArgs { number, action }) => {
+            (SendDestination::Fx(number), action)
+        }
+    };
+
+    run_send_action(mixer, source, destination, target)
+}
+
+fn run_send_action(
+    mixer: &mut impl Mixer,
+    source: SendSource,
+    destination: SendDestination,
+    action: SendAction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        SendAction::Get { field } => match field {
+            Some(SendGetField::Db) => {
+                println!("{} dB", get_send_level_db(mixer, source, destination)?)
+            }
+            Some(SendGetField::Enabled) => {
+                println!("{}", get_send_enabled(mixer, source, destination)?)
+            }
+            None => println!("{}", get_send_level(mixer, source, destination)?),
+        },
+        SendAction::Set(SendSetArgs { action, value }) => match (action, value) {
+            (Some(SendSetAction::Enabled { value }), None) => {
+                set_send_enabled(mixer, source, destination, parse_bool_value(&value)?)?;
+                println!("ok");
+            }
+            (None, Some(value)) => {
+                if value.to_ascii_lowercase().ends_with("db") {
+                    set_send_level_db(mixer, source, destination, parse_db_value(&value)?)?;
+                } else {
+                    set_send_level(mixer, source, destination, value.parse::<f32>()?)?;
+                }
+                println!("ok");
+            }
+            (Some(_), Some(_)) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unexpected level value after setting send enabled state",
+                )
+                .into());
+            }
+            (None, None) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "expected a send level or enabled state",
+                )
+                .into());
+            }
+        },
+        SendAction::Subscribe => run_send_subscription(mixer, source, destination)?,
+    }
+
+    Ok(())
+}
+
+fn get_send_level(
+    mixer: &mut impl Mixer,
+    source: SendSource,
+    destination: SendDestination,
+) -> io::Result<f32> {
+    match (source, destination) {
+        (SendSource::Channel(channel), SendDestination::Bus(bus)) => {
+            mixer.get_channel_bus_send(channel, bus)
+        }
+        (SendSource::Channel(channel), SendDestination::Fx(fx)) => {
+            mixer.get_channel_fx_send(channel, fx)
+        }
+        (SendSource::Aux, SendDestination::Bus(bus)) => mixer.get_aux_bus_send(bus),
+        (SendSource::Aux, SendDestination::Fx(fx)) => mixer.get_aux_fx_send(fx),
+    }
+}
+
+fn get_send_level_db(
+    mixer: &mut impl Mixer,
+    source: SendSource,
+    destination: SendDestination,
+) -> io::Result<f32> {
+    match (source, destination) {
+        (SendSource::Channel(channel), SendDestination::Bus(bus)) => {
+            mixer.get_channel_bus_send_db(channel, bus)
+        }
+        (SendSource::Channel(channel), SendDestination::Fx(fx)) => {
+            mixer.get_channel_fx_send_db(channel, fx)
+        }
+        (SendSource::Aux, SendDestination::Bus(bus)) => mixer.get_aux_bus_send_db(bus),
+        (SendSource::Aux, SendDestination::Fx(fx)) => mixer.get_aux_fx_send_db(fx),
+    }
+}
+
+fn set_send_level(
+    mixer: &mut impl Mixer,
+    source: SendSource,
+    destination: SendDestination,
+    value: f32,
+) -> io::Result<()> {
+    match (source, destination) {
+        (SendSource::Channel(channel), SendDestination::Bus(bus)) => {
+            mixer.set_channel_bus_send(channel, bus, value)
+        }
+        (SendSource::Channel(channel), SendDestination::Fx(fx)) => {
+            mixer.set_channel_fx_send(channel, fx, value)
+        }
+        (SendSource::Aux, SendDestination::Bus(bus)) => mixer.set_aux_bus_send(bus, value),
+        (SendSource::Aux, SendDestination::Fx(fx)) => mixer.set_aux_fx_send(fx, value),
+    }
+}
+
+fn set_send_level_db(
+    mixer: &mut impl Mixer,
+    source: SendSource,
+    destination: SendDestination,
+    value: f32,
+) -> io::Result<()> {
+    match (source, destination) {
+        (SendSource::Channel(channel), SendDestination::Bus(bus)) => {
+            mixer.set_channel_bus_send_db(channel, bus, value)
+        }
+        (SendSource::Channel(channel), SendDestination::Fx(fx)) => {
+            mixer.set_channel_fx_send_db(channel, fx, value)
+        }
+        (SendSource::Aux, SendDestination::Bus(bus)) => mixer.set_aux_bus_send_db(bus, value),
+        (SendSource::Aux, SendDestination::Fx(fx)) => mixer.set_aux_fx_send_db(fx, value),
+    }
+}
+
+fn get_send_enabled(
+    mixer: &mut impl Mixer,
+    source: SendSource,
+    destination: SendDestination,
+) -> io::Result<bool> {
+    match (source, destination) {
+        (SendSource::Channel(channel), SendDestination::Bus(bus)) => {
+            mixer.get_channel_bus_send_enabled(channel, bus)
+        }
+        (SendSource::Channel(channel), SendDestination::Fx(fx)) => {
+            mixer.get_channel_fx_send_enabled(channel, fx)
+        }
+        (SendSource::Aux, SendDestination::Bus(bus)) => mixer.get_aux_bus_send_enabled(bus),
+        (SendSource::Aux, SendDestination::Fx(fx)) => mixer.get_aux_fx_send_enabled(fx),
+    }
+}
+
+fn set_send_enabled(
+    mixer: &mut impl Mixer,
+    source: SendSource,
+    destination: SendDestination,
+    enabled: bool,
+) -> io::Result<()> {
+    match (source, destination) {
+        (SendSource::Channel(channel), SendDestination::Bus(bus)) => {
+            mixer.set_channel_bus_send_enabled(channel, bus, enabled)
+        }
+        (SendSource::Channel(channel), SendDestination::Fx(fx)) => {
+            mixer.set_channel_fx_send_enabled(channel, fx, enabled)
+        }
+        (SendSource::Aux, SendDestination::Bus(bus)) => {
+            mixer.set_aux_bus_send_enabled(bus, enabled)
+        }
+        (SendSource::Aux, SendDestination::Fx(fx)) => mixer.set_aux_fx_send_enabled(fx, enabled),
+    }
+}
+
+fn subscribe_send_updates(
+    mixer: &mut impl Mixer,
+    source: SendSource,
+    destination: SendDestination,
+) -> io::Result<Box<dyn mixerlib::SendUpdateStream>> {
+    match (source, destination) {
+        (SendSource::Channel(channel), SendDestination::Bus(bus)) => {
+            mixer.subscribe_channel_bus_send_updates(channel, bus)
+        }
+        (SendSource::Channel(channel), SendDestination::Fx(fx)) => {
+            mixer.subscribe_channel_fx_send_updates(channel, fx)
+        }
+        (SendSource::Aux, SendDestination::Bus(bus)) => mixer.subscribe_aux_bus_send_updates(bus),
+        (SendSource::Aux, SendDestination::Fx(fx)) => mixer.subscribe_aux_fx_send_updates(fx),
+    }
+}
+
+fn run_send_subscription(
+    mixer: &mut impl Mixer,
+    source: SendSource,
+    destination: SendDestination,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stream = subscribe_send_updates(mixer, source, destination)?;
+    let source_name = match source {
+        SendSource::Channel(channel) => format!("channel {channel}"),
+        SendSource::Aux => "Aux".to_string(),
+    };
+    let destination_name = match destination {
+        SendDestination::Bus(bus) => format!("bus {bus}"),
+        SendDestination::Fx(fx) => format!("FX send {fx}"),
+    };
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+
+    loop {
+        match stream.recv() {
+            Ok(SendUpdate::Level { value, db }) => {
+                writeln!(
+                    output,
+                    "{source_name} | {destination_name} level: {value:.3} ({db:.1} dB)"
+                )?;
+                output.flush()?;
+            }
+            Ok(SendUpdate::Enabled(enabled)) => {
+                writeln!(
+                    output,
+                    "{source_name} | {destination_name} enabled: {enabled}"
+                )?;
+                output.flush()?;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 fn run_fader_action(
@@ -455,7 +785,10 @@ fn format_channel_update_line(channel: u8, update: ChannelUpdate) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_channel_meter, ChannelGetField, ChannelMeter, Cli, Command};
+    use super::{
+        format_channel_meter, AuxAction, ChannelAction, ChannelGetField, ChannelMeter, Cli,
+        Command, SendAction, SendDestinationArgs, SendGetField, SendSetAction,
+    };
     use clap::Parser;
 
     #[test]
@@ -484,5 +817,130 @@ mod tests {
             }),
             "Pre-fader: L -12.0 dBFS, R -10.5 dBFS\nPost-fader: L -6.0 dBFS, R -4.5 dBFS"
         );
+    }
+
+    #[test]
+    fn parses_channel_bus_send_get_db_and_set_enabled_commands() {
+        let cli = Cli::try_parse_from([
+            "mixinglib",
+            "--ip",
+            "127.0.0.1",
+            "ch",
+            "3",
+            "send",
+            "bus",
+            "6",
+            "get",
+            "db",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Ch(args) => match args.action {
+                ChannelAction::Send(args) => match args.destination {
+                    SendDestinationArgs::Bus(target) => {
+                        assert_eq!(target.number, 6);
+                        assert!(matches!(
+                            target.action,
+                            SendAction::Get {
+                                field: Some(SendGetField::Db)
+                            }
+                        ));
+                    }
+                    _ => panic!("expected bus send"),
+                },
+                _ => panic!("expected send command"),
+            },
+            _ => panic!("expected channel command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "mixinglib",
+            "--ip",
+            "127.0.0.1",
+            "ch",
+            "3",
+            "send",
+            "bus",
+            "6",
+            "set",
+            "enabled",
+            "off",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Ch(args) => match args.action {
+                ChannelAction::Send(args) => match args.destination {
+                    SendDestinationArgs::Bus(target) => match target.action {
+                        SendAction::Set(set) => {
+                            assert!(
+                                matches!(set.action, Some(SendSetAction::Enabled { ref value }) if value == "off")
+                            );
+                            assert_eq!(set.value, None);
+                        }
+                        _ => panic!("expected send SET command"),
+                    },
+                    _ => panic!("expected bus send"),
+                },
+                _ => panic!("expected send command"),
+            },
+            _ => panic!("expected channel command"),
+        }
+    }
+
+    #[test]
+    fn parses_aux_fx_send_subscription_and_db_set_commands() {
+        let cli = Cli::try_parse_from([
+            "mixinglib",
+            "--ip",
+            "127.0.0.1",
+            "aux",
+            "send",
+            "fx",
+            "2",
+            "subscribe",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Aux(args) => match args.action {
+                AuxAction::Send(args) => match args.destination {
+                    SendDestinationArgs::Fx(target) => {
+                        assert_eq!(target.number, 2);
+                        assert!(matches!(target.action, SendAction::Subscribe));
+                    }
+                    _ => panic!("expected FX send"),
+                },
+                _ => panic!("expected Aux send command"),
+            },
+            _ => panic!("expected Aux command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "mixinglib",
+            "--ip",
+            "127.0.0.1",
+            "aux",
+            "send",
+            "bus",
+            "1",
+            "set",
+            "-6db",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Aux(args) => match args.action {
+                AuxAction::Send(args) => match args.destination {
+                    SendDestinationArgs::Bus(target) => match target.action {
+                        SendAction::Set(set) => {
+                            assert!(set.action.is_none());
+                            assert_eq!(set.value.as_deref(), Some("-6db"));
+                        }
+                        _ => panic!("expected send SET command"),
+                    },
+                    _ => panic!("expected bus send"),
+                },
+                _ => panic!("expected Aux send command"),
+            },
+            _ => panic!("expected Aux command"),
+        }
     }
 }

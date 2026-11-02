@@ -4,10 +4,13 @@ use std::time::{Duration, Instant};
 
 use crate::{
     ChannelMeter, ChannelMeterStream, ChannelUpdate, ChannelUpdateStream, Mixer, MixerInfo,
+    SendUpdate, SendUpdateStream,
 };
 
 const X_AIR_OSC_PORT: u16 = 10024;
 const MAX_INPUT_CHANNEL: u8 = 16;
+const MAX_BUS_SEND: u8 = 6;
+const MAX_FX_SEND: u8 = 4;
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_PACKET_SIZE: usize = 4096;
 const METER_SUBSCRIPTION_RENEW_INTERVAL: Duration = Duration::from_secs(5);
@@ -81,6 +84,76 @@ impl BehringerXAir {
         }
 
         Ok(format!("/rtn/{fx}/mix/fader"))
+    }
+
+    fn channel_bus_send_target(channel: u8, bus: u8) -> io::Result<XAirSendTarget> {
+        if !(1..=MAX_BUS_SEND).contains(&bus) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("bus must be between 1 and {MAX_BUS_SEND}"),
+            ));
+        }
+
+        let base = Self::channel_address(channel, &format!("mix/{bus:02}"))?;
+        Ok(XAirSendTarget {
+            level_path: format!("{base}/level"),
+            enabled_path: Some(format!("{base}/on")),
+        })
+    }
+
+    fn channel_fx_send_target(channel: u8, fx: u8) -> io::Result<XAirSendTarget> {
+        if !(1..=MAX_FX_SEND).contains(&fx) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("FX send must be between 1 and {MAX_FX_SEND}"),
+            ));
+        }
+
+        let destination = fx + MAX_BUS_SEND;
+        let base = Self::channel_address(channel, &format!("mix/{destination:02}"))?;
+        Ok(XAirSendTarget {
+            level_path: format!("{base}/level"),
+            enabled_path: Some(format!("{base}/on")),
+        })
+    }
+
+    fn aux_bus_send_target(bus: u8) -> io::Result<XAirSendTarget> {
+        if !(1..=MAX_BUS_SEND).contains(&bus) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("bus must be between 1 and {MAX_BUS_SEND}"),
+            ));
+        }
+
+        Ok(XAirSendTarget {
+            level_path: format!("/rtn/aux/mix/{bus:02}/level"),
+            enabled_path: None,
+        })
+    }
+
+    fn get_send_level(&self, address: &str) -> io::Result<f32> {
+        self.send_message(address, None)?;
+        self.receive_float_value(address)
+    }
+
+    fn set_send_level(&self, address: &str, value: f32) -> io::Result<()> {
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR send level must be between 0.0 and 1.0",
+            ));
+        }
+
+        self.send_message(address, Some(value))
+    }
+
+    fn get_send_enabled(&self, address: &str) -> io::Result<bool> {
+        self.send_int_message(address, None)?;
+        self.receive_channel_bool(address)
+    }
+
+    fn set_send_enabled(&self, address: &str, enabled: bool) -> io::Result<()> {
+        self.send_int_message(address, Some(if enabled { 1 } else { 0 }))
     }
 
     fn send_message(&self, address: &str, value: Option<f32>) -> io::Result<()> {
@@ -293,6 +366,27 @@ impl BehringerXAir {
             last_subscription: Instant::now(),
         }))
     }
+
+    fn subscribe_send_updates(
+        &mut self,
+        target: XAirSendTarget,
+    ) -> io::Result<Box<dyn SendUpdateStream>> {
+        let peer_addr = self.socket.peer_addr()?;
+        let bind_addr = match peer_addr.ip() {
+            IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+        };
+        let socket = UdpSocket::bind(bind_addr)?;
+        socket.connect(peer_addr)?;
+        socket.set_read_timeout(Some(RESPONSE_TIMEOUT))?;
+        send_parameter_subscription(&socket)?;
+
+        Ok(Box::new(BehringerXAirSendUpdateStream {
+            socket,
+            target,
+            last_subscription: Instant::now(),
+        }))
+    }
 }
 
 impl Mixer for BehringerXAir {
@@ -353,6 +447,128 @@ impl Mixer for BehringerXAir {
         fx: u8,
     ) -> io::Result<Box<dyn ChannelUpdateStream>> {
         self.subscribe_parameter_updates(XAirUpdateTarget::FxReturn(fx))
+    }
+
+    fn get_channel_bus_send(&mut self, channel: u8, bus: u8) -> io::Result<f32> {
+        let target = Self::channel_bus_send_target(channel, bus)?;
+        self.get_send_level(&target.level_path)
+    }
+
+    fn set_channel_bus_send(&mut self, channel: u8, bus: u8, value: f32) -> io::Result<()> {
+        let target = Self::channel_bus_send_target(channel, bus)?;
+        self.set_send_level(&target.level_path, value)
+    }
+
+    fn get_channel_bus_send_db(&mut self, channel: u8, bus: u8) -> io::Result<f32> {
+        self.get_channel_bus_send(channel, bus).map(fader_to_db)
+    }
+
+    fn set_channel_bus_send_db(&mut self, channel: u8, bus: u8, value: f32) -> io::Result<()> {
+        if !value.is_finite() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR send dB value must be finite",
+            ));
+        }
+        self.set_channel_bus_send(channel, bus, db_to_fader(value))
+    }
+
+    fn get_channel_bus_send_enabled(&mut self, channel: u8, bus: u8) -> io::Result<bool> {
+        let target = Self::channel_bus_send_target(channel, bus)?;
+        self.get_send_enabled(target.enabled_path()?)
+    }
+
+    fn set_channel_bus_send_enabled(
+        &mut self,
+        channel: u8,
+        bus: u8,
+        enabled: bool,
+    ) -> io::Result<()> {
+        let target = Self::channel_bus_send_target(channel, bus)?;
+        self.set_send_enabled(target.enabled_path()?, enabled)
+    }
+
+    fn subscribe_channel_bus_send_updates(
+        &mut self,
+        channel: u8,
+        bus: u8,
+    ) -> io::Result<Box<dyn SendUpdateStream>> {
+        self.subscribe_send_updates(Self::channel_bus_send_target(channel, bus)?)
+    }
+
+    fn get_channel_fx_send(&mut self, channel: u8, fx: u8) -> io::Result<f32> {
+        let target = Self::channel_fx_send_target(channel, fx)?;
+        self.get_send_level(&target.level_path)
+    }
+
+    fn set_channel_fx_send(&mut self, channel: u8, fx: u8, value: f32) -> io::Result<()> {
+        let target = Self::channel_fx_send_target(channel, fx)?;
+        self.set_send_level(&target.level_path, value)
+    }
+
+    fn get_channel_fx_send_db(&mut self, channel: u8, fx: u8) -> io::Result<f32> {
+        self.get_channel_fx_send(channel, fx).map(fader_to_db)
+    }
+
+    fn set_channel_fx_send_db(&mut self, channel: u8, fx: u8, value: f32) -> io::Result<()> {
+        if !value.is_finite() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR send dB value must be finite",
+            ));
+        }
+        self.set_channel_fx_send(channel, fx, db_to_fader(value))
+    }
+
+    fn get_channel_fx_send_enabled(&mut self, channel: u8, fx: u8) -> io::Result<bool> {
+        let target = Self::channel_fx_send_target(channel, fx)?;
+        self.get_send_enabled(target.enabled_path.as_deref().unwrap())
+    }
+
+    fn set_channel_fx_send_enabled(
+        &mut self,
+        channel: u8,
+        fx: u8,
+        enabled: bool,
+    ) -> io::Result<()> {
+        let target = Self::channel_fx_send_target(channel, fx)?;
+        self.set_send_enabled(target.enabled_path.as_deref().unwrap(), enabled)
+    }
+
+    fn subscribe_channel_fx_send_updates(
+        &mut self,
+        channel: u8,
+        fx: u8,
+    ) -> io::Result<Box<dyn SendUpdateStream>> {
+        self.subscribe_send_updates(Self::channel_fx_send_target(channel, fx)?)
+    }
+
+    fn get_aux_bus_send(&mut self, bus: u8) -> io::Result<f32> {
+        let target = Self::aux_bus_send_target(bus)?;
+        self.get_send_level(&target.level_path)
+    }
+
+    fn set_aux_bus_send(&mut self, bus: u8, value: f32) -> io::Result<()> {
+        let target = Self::aux_bus_send_target(bus)?;
+        self.set_send_level(&target.level_path, value)
+    }
+
+    fn get_aux_bus_send_db(&mut self, bus: u8) -> io::Result<f32> {
+        self.get_aux_bus_send(bus).map(fader_to_db)
+    }
+
+    fn set_aux_bus_send_db(&mut self, bus: u8, value: f32) -> io::Result<()> {
+        if !value.is_finite() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "X AIR Aux send dB value must be finite",
+            ));
+        }
+        self.set_aux_bus_send(bus, db_to_fader(value))
+    }
+
+    fn subscribe_aux_bus_send_updates(&mut self, bus: u8) -> io::Result<Box<dyn SendUpdateStream>> {
+        self.subscribe_send_updates(Self::aux_bus_send_target(bus)?)
     }
 
     fn get_channel_label(&mut self, channel: u8) -> io::Result<String> {
@@ -573,6 +789,29 @@ struct BehringerXAirChannelUpdateStream {
     last_subscription: Instant,
 }
 
+struct BehringerXAirSendUpdateStream {
+    socket: UdpSocket,
+    target: XAirSendTarget,
+    last_subscription: Instant,
+}
+
+#[derive(Debug)]
+struct XAirSendTarget {
+    level_path: String,
+    enabled_path: Option<String>,
+}
+
+impl XAirSendTarget {
+    fn enabled_path(&self) -> io::Result<&str> {
+        self.enabled_path.as_deref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "X AIR does not expose per-send enabled state for this send",
+            )
+        })
+    }
+}
+
 #[derive(Clone, Copy)]
 enum XAirUpdateTarget {
     Channel(u8),
@@ -645,6 +884,46 @@ impl ChannelMeterStream for BehringerXAirChannelMeterStream {
                 Ok(packet_len) => {
                     if let Some(meter) = parse_channel_meter_response(&packet[..packet_len])? {
                         return Ok(meter);
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+impl SendUpdateStream for BehringerXAirSendUpdateStream {
+    fn recv(&mut self) -> io::Result<SendUpdate> {
+        if self.last_subscription.elapsed() >= PARAMETER_SUBSCRIPTION_RENEW_INTERVAL {
+            send_parameter_subscription(&self.socket)?;
+            self.last_subscription = Instant::now();
+        }
+
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
+        let mut packet = [0_u8; MAX_PACKET_SIZE];
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timed out waiting for X AIR send update",
+                ));
+            }
+            self.socket.set_read_timeout(Some(remaining))?;
+
+            match self.socket.recv(&mut packet) {
+                Ok(packet_len) => {
+                    if let Some(update) = parse_send_update(&packet[..packet_len], &self.target)? {
+                        return Ok(update);
                     }
                 }
                 Err(error)
@@ -851,6 +1130,23 @@ fn parse_target_update(
             parse_fader_update(packet, &format!("/rtn/{fx}/mix/fader"))
         }
     }
+}
+
+fn parse_send_update(packet: &[u8], target: &XAirSendTarget) -> io::Result<Option<SendUpdate>> {
+    if let Some(value) = parse_float_response(packet, &target.level_path)? {
+        return Ok(Some(SendUpdate::Level {
+            value,
+            db: fader_to_db(value),
+        }));
+    }
+
+    if let Some(enabled_path) = target.enabled_path.as_deref() {
+        if let Some(enabled) = parse_channel_bool_response(packet, enabled_path)? {
+            return Ok(Some(SendUpdate::Enabled(enabled)));
+        }
+    }
+
+    Ok(None)
 }
 
 fn parse_fader_update(packet: &[u8], expected_path: &str) -> io::Result<Option<ChannelUpdate>> {
@@ -1197,6 +1493,47 @@ mod tests {
     use super::*;
     use std::thread;
 
+    fn float_message(address: &str, value: f32) -> Vec<u8> {
+        let mut packet = Vec::new();
+        append_osc_string(&mut packet, address);
+        append_osc_string(&mut packet, ",f");
+        packet.extend_from_slice(&value.to_be_bytes());
+        packet
+    }
+
+    fn get_message(address: &str) -> Vec<u8> {
+        let mut packet = Vec::new();
+        append_osc_string(&mut packet, address);
+        append_osc_string(&mut packet, ",");
+        packet
+    }
+
+    fn int_message(address: &str, value: i32) -> Vec<u8> {
+        let mut packet = Vec::new();
+        append_osc_string(&mut packet, address);
+        append_osc_string(&mut packet, ",i");
+        packet.extend_from_slice(&value.to_be_bytes());
+        packet
+    }
+
+    fn status_float_message(value: f32, path: &str) -> Vec<u8> {
+        let mut packet = Vec::new();
+        append_osc_string(&mut packet, "/status");
+        append_osc_string(&mut packet, ",fs");
+        packet.extend_from_slice(&value.to_be_bytes());
+        append_osc_string(&mut packet, path);
+        packet
+    }
+
+    fn status_int_message(value: i32, path: &str) -> Vec<u8> {
+        let mut packet = Vec::new();
+        append_osc_string(&mut packet, "/status");
+        append_osc_string(&mut packet, ",is");
+        packet.extend_from_slice(&value.to_be_bytes());
+        append_osc_string(&mut packet, path);
+        packet
+    }
+
     fn meter_packet(values: [i16; 8]) -> Vec<u8> {
         let mut blob = Vec::with_capacity(20);
         blob.extend_from_slice(&8_u32.to_le_bytes());
@@ -1224,6 +1561,204 @@ mod tests {
 
     fn expected_meter_packet() -> Vec<u8> {
         meter_packet([-3072, -2048, -512, -256, -768, -256, -32768, 0])
+    }
+
+    #[test]
+    fn send_target_paths_map_bus_and_fx_destinations() {
+        let bus = BehringerXAir::channel_bus_send_target(1, 6).unwrap();
+        assert_eq!(bus.level_path, "/ch/01/mix/06/level");
+        assert_eq!(bus.enabled_path.as_deref(), Some("/ch/01/mix/06/on"));
+
+        let first_fx = BehringerXAir::channel_fx_send_target(16, 1).unwrap();
+        assert_eq!(first_fx.level_path, "/ch/16/mix/07/level");
+
+        let last_fx = BehringerXAir::channel_fx_send_target(16, 4).unwrap();
+        assert_eq!(last_fx.level_path, "/ch/16/mix/10/level");
+
+        let aux = BehringerXAir::aux_bus_send_target(2).unwrap();
+        assert_eq!(aux.level_path, "/rtn/aux/mix/02/level");
+        assert_eq!(aux.enabled_path, None);
+    }
+
+    #[test]
+    fn send_target_paths_reject_out_of_range_indices() {
+        assert_eq!(
+            BehringerXAir::channel_bus_send_target(0, 1)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            BehringerXAir::channel_bus_send_target(1, 7)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            BehringerXAir::channel_fx_send_target(1, 0)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            BehringerXAir::aux_bus_send_target(7).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn send_setters_encode_float_levels_and_integer_enabled_state() {
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut mixer = BehringerXAir::with_mixer_addr(server.local_addr().unwrap()).unwrap();
+
+        mixer.set_channel_bus_send(3, 6, 0.25).unwrap();
+        let mut packet = [0_u8; 128];
+        let (packet_len, _) = server.recv_from(&mut packet).unwrap();
+        assert_eq!(
+            &packet[..packet_len],
+            float_message("/ch/03/mix/06/level", 0.25).as_slice()
+        );
+
+        mixer.set_channel_fx_send_enabled(3, 4, true).unwrap();
+        let (packet_len, _) = server.recv_from(&mut packet).unwrap();
+        assert_eq!(
+            &packet[..packet_len],
+            int_message("/ch/03/mix/10/on", 1).as_slice()
+        );
+
+        mixer.set_channel_fx_send_db(3, 1, -10.0).unwrap();
+        let (packet_len, _) = server.recv_from(&mut packet).unwrap();
+        assert_eq!(
+            &packet[..packet_len],
+            float_message("/ch/03/mix/07/level", 0.5).as_slice()
+        );
+
+        mixer.set_aux_bus_send(1, 0.75).unwrap();
+        let (packet_len, _) = server.recv_from(&mut packet).unwrap();
+        assert_eq!(
+            &packet[..packet_len],
+            float_message("/rtn/aux/mix/01/level", 0.75).as_slice()
+        );
+    }
+
+    #[test]
+    fn send_getters_parse_direct_and_status_responses() {
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let server_thread = thread::spawn(move || {
+            let mut request = [0_u8; 128];
+            let (request_len, client_addr) = server.recv_from(&mut request).unwrap();
+            assert_eq!(
+                &request[..request_len],
+                get_message("/ch/02/mix/06/level").as_slice()
+            );
+            server
+                .send_to(&float_message("/ch/02/mix/06/level", 0.625), client_addr)
+                .unwrap();
+
+            let (request_len, client_addr) = server.recv_from(&mut request).unwrap();
+            let expected = {
+                let mut packet = Vec::new();
+                append_osc_string(&mut packet, "/ch/02/mix/07/on");
+                append_osc_string(&mut packet, ",");
+                packet
+            };
+            assert_eq!(&request[..request_len], expected.as_slice());
+            server
+                .send_to(&status_int_message(0, "/ch/02/mix/07/on"), client_addr)
+                .unwrap();
+        });
+
+        let mut mixer = BehringerXAir::with_mixer_addr(server_addr).unwrap();
+        assert_eq!(mixer.get_channel_bus_send(2, 6).unwrap(), 0.625);
+        assert!(!mixer.get_channel_fx_send_enabled(2, 1).unwrap());
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn send_update_parser_handles_levels_states_and_unrelated_paths() {
+        let target = BehringerXAir::channel_fx_send_target(4, 2).unwrap();
+        assert_eq!(
+            parse_send_update(&float_message("/ch/04/mix/08/level", 0.5), &target).unwrap(),
+            Some(SendUpdate::Level {
+                value: 0.5,
+                db: -10.0,
+            })
+        );
+        assert_eq!(
+            parse_send_update(&status_int_message(1, "/ch/04/mix/08/on"), &target).unwrap(),
+            Some(SendUpdate::Enabled(true))
+        );
+        assert_eq!(
+            parse_send_update(&float_message("/ch/04/mix/07/level", 0.5), &target).unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_send_update(&status_float_message(0.5, "/ch/04/mix/08/level"), &target).unwrap(),
+            Some(SendUpdate::Level {
+                value: 0.5,
+                db: -10.0,
+            })
+        );
+    }
+
+    #[test]
+    fn send_subscription_filters_updates_to_selected_send() {
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        socket.connect(server_addr).unwrap();
+        socket.set_read_timeout(Some(RESPONSE_TIMEOUT)).unwrap();
+        send_parameter_subscription(&socket).unwrap();
+        let mut stream = BehringerXAirSendUpdateStream {
+            socket,
+            target: BehringerXAir::channel_bus_send_target(2, 3).unwrap(),
+            last_subscription: Instant::now(),
+        };
+
+        let server_thread = thread::spawn(move || {
+            let mut request = [0_u8; 128];
+            let (_, client_addr) = server.recv_from(&mut request).unwrap();
+            server
+                .send_to(&float_message("/ch/02/mix/02/level", 0.2), client_addr)
+                .unwrap();
+            server
+                .send_to(&float_message("/ch/02/mix/03/level", 0.75), client_addr)
+                .unwrap();
+        });
+
+        assert_eq!(
+            stream.recv().unwrap(),
+            SendUpdate::Level {
+                value: 0.75,
+                db: 0.0,
+            }
+        );
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn xair_aux_send_operations_without_individual_paths_are_unsupported() {
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut mixer = BehringerXAir::with_mixer_addr(server.local_addr().unwrap()).unwrap();
+
+        assert_eq!(
+            mixer.get_aux_bus_send_enabled(1).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            mixer.get_aux_fx_send(1).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
     }
 
     #[test]
